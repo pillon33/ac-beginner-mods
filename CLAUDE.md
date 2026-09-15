@@ -106,3 +106,52 @@ that reference states.
 - Commit messages, README updates, and screenshots matter here more
   than in a typical side project — this repo is meant to be read by
   someone hiring, not just to work.
+
+## Working with GitHub (read this before touching git/GitHub here)
+
+- **Repo:** `pillon33/ac-beginner-mods` on github.com, remote `origin`,
+  default branch `main`.
+- **Workflow:** Claude does not push directly to `main`. For any
+  change: create a branch, push to it, open a pull request, and let
+  Szymon review/merge. (One early exception — a direct push to `main`
+  — happened before this convention was agreed; everything since
+  follows the branch+PR flow.)
+- **How Claude reaches GitHub:** through the connected GitHub MCP
+  tools (`create_branch`, `push_files`, `create_pull_request`, etc.),
+  not local shell — this environment has no `git`/shell access to
+  Szymon's machine. Local, non-Claude commits/pushes on Szymon's side
+  go through his own terminal as normal.
+
+### Known gotcha: connector write calls can 403
+
+The GitHub MCP connector has a **known, currently-open Anthropic bug**
+(see [anthropics/claude-ai-mcp#822](https://github.com/anthropics/claude-ai-mcp/issues/822)):
+reads succeed, but writes (`create_or_update_file`, `push_files`,
+`create_branch`, `issue_write`, ...) can fail with:
+
+```
+403 Resource not accessible by integration
+```
+
+even though the OAuth authorization looks fine and the user has push
+access. This is **not** fixable via the repo's own settings
+(branch protections, collaborator access, etc.) — it's the connector
+integration itself lacking write scope.
+
+**Fix/workaround that resolved it for this repo:** install the
+separate **"Claude" GitHub App** (`github.com/apps/claude` — distinct
+from "Claude Github MCP Connector", which is the OAuth-based one that
+hits this bug) and grant it access to this repository:
+
+1. `github.com/apps/claude` → **Install** (or **Configure** if already
+   installed) → select `pillon33` → grant access to
+   `ac-beginner-mods` (or all repos).
+2. Retry the write call. It may take a short moment after installing
+   for GitHub to propagate the new installation — if the very first
+   retry still 403s, wait briefly and try again before assuming it's
+   broken.
+
+If writes start failing again in a future session (fresh 403s on
+`create_branch`/`push_files`/etc.), check first whether the "Claude"
+GitHub App is still installed with access to this repo before
+assuming it's a new problem — this bug is the most likely explanation.
