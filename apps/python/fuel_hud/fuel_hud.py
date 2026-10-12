@@ -1,33 +1,28 @@
 """
-fuel_hud.py — in-game Assetto Corsa app showing fuel in the tank,
-fuel used this lap, fuel used last lap, and the average per lap.
+fuel_hud.py — in-game Assetto Corsa app for fuel: what's in the tank,
+how many laps it lasts, whether it reaches the flag, and how this lap
+is going against the consumption you can afford.
 
 This file is the thin edge between the game and fuel_logic.py: it
-reads the game every frame, hands the numbers to a FuelTracker, and
-writes the results into labels. All the lap bookkeeping lives in
-fuel_logic.py, where pytest can reach it.
+reads the game every frame, hands the numbers to a FuelTracker and the
+race-maths functions, and writes the results into labels. All the
+logic lives in fuel_logic.py, where pytest can reach it.
 
-WHERE THE FUEL NUMBER COMES FROM
----------------------------------
+WHERE THE NUMBERS COME FROM
+----------------------------
 `ac.getCarState()` has no fuel entry (see the CS list in
-<AC install>\\apps\\python\\system\\acsys.py), so this app reads the
-fuel level from AC's shared memory instead, the same block
-telemetry/shared_memory.py reads from outside the game.
+<AC install>\\apps\\python\\system\\acsys.py), and nothing in the `ac`
+API says how long the session is. Both come from AC's shared memory
+instead, read through ac_memory.py (mmap + struct, no ctypes; see the
+note there).
 
-Most AC apps do that with ctypes, which means bundling a
-`_ctypes.pyd` binary because AC's Python ships without one. This app
-skips ctypes: `mmap` and `struct` are built into AC's python33.dll,
-and fuel is a single float at a fixed byte offset in the physics
-block, so `struct.unpack_from` is enough.
-
-Lap count and pit-lane state come from the regular `ac` API.
+From the regular `ac` API: completed laps, lap progress (track
+position 0..1), current lap time and pit-lane state.
 
 Python 3.3: no f-strings (see CLAUDE.md).
 """
 
-import mmap
 import os
-import struct
 import sys
 
 import ac
@@ -37,38 +32,55 @@ import acsys
 # directory, so make sibling modules importable explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fuel_logic import FuelTracker, format_average, format_last_lap, format_litres  # noqa: E402
+import ac_memory  # noqa: E402
+from fuel_logic import (  # noqa: E402
+    STATUS_BAD, STATUS_GOOD, STATUS_WARN,
+    FuelTracker, SessionInfo,
+    format_average, format_current_lap, format_last_lap, format_laps,
+    format_litres, format_surplus, format_target,
+    lap_budget_delta, lap_budget_status, laps_of_fuel, laps_to_flag,
+    surplus_status, surplus_to_flag, target_per_lap,
+)
 
 APP_NAME = "fuel_hud"
 PLAYER_CAR = 0
 
-# SPageFilePhysics layout: packetId (int32), gas (float), brake
-# (float), fuel (float) -> fuel starts at byte 12, little-endian.
-PHYSICS_TAG = "Local\\acpmf_physics"
-PHYSICS_FUEL_OFFSET = 12
-PHYSICS_READ_SIZE = 16
+ROWS = [
+    ("fuel", "Tank"),
+    ("laps_left", "Laps left"),
+    ("to_flag", "To flag"),
+    ("target", "Target"),
+    ("current", "This lap"),
+    ("last", "Last lap"),
+    ("average", "Average"),
+]
+
+# RGBA for ac.setFontColor.
+STATUS_COLOURS = {
+    STATUS_GOOD: (0.4, 0.9, 0.55, 1.0),
+    STATUS_WARN: (1.0, 0.78, 0.3, 1.0),
+    STATUS_BAD: (1.0, 0.42, 0.36, 1.0),
+    None: (1.0, 1.0, 1.0, 1.0),
+}
 
 app_window = None
 labels = {}
-physics_map = None
+physics = None
+graphics = None
+static = None
 tracker = FuelTracker()
+logged_session = False
 
 
 def acMain(ac_version):
-    global app_window, physics_map
+    global app_window, physics, graphics, static
 
     app_window = ac.newApp(APP_NAME)
-    ac.setSize(app_window, 220, 150)
+    ac.setSize(app_window, 270, 40 + len(ROWS) * 24)
     ac.setTitle(app_window, "Fuel")
 
-    rows = [
-        ("fuel", "Tank"),
-        ("current", "This lap"),
-        ("last", "Last lap"),
-        ("average", "Average"),
-    ]
-    for index, (key, caption) in enumerate(rows):
-        y = 35 + index * 26
+    for index, (key, caption) in enumerate(ROWS):
+        y = 35 + index * 24
         caption_label = ac.addLabel(app_window, caption)
         ac.setPosition(caption_label, 10, y)
         value_label = ac.addLabel(app_window, "--")
@@ -76,8 +88,11 @@ def acMain(ac_version):
         labels[key] = value_label
 
     try:
-        physics_map = mmap.mmap(-1, PHYSICS_READ_SIZE, tagname=PHYSICS_TAG, access=mmap.ACCESS_READ)
+        physics = ac_memory.SharedMemoryBlock(ac_memory.PHYSICS_TAG, ac_memory.PHYSICS_READ_SIZE)
+        graphics = ac_memory.SharedMemoryBlock(ac_memory.GRAPHICS_TAG, ac_memory.GRAPHICS_READ_SIZE)
+        static = ac_memory.SharedMemoryBlock(ac_memory.STATIC_TAG, ac_memory.STATIC_READ_SIZE)
     except Exception as error:
+        physics = None
         ac.log("{}: could not open shared memory: {}".format(APP_NAME, error))
 
     ac.log("{}: acMain finished".format(APP_NAME))
@@ -85,30 +100,70 @@ def acMain(ac_version):
 
 
 def acUpdate(deltaT):
-    fuel = read_fuel()
-    if fuel is None:
+    if physics is None:
         return
 
+    session = read_session()
+    log_session_once(session)
+
+    completed_laps = ac.getCarState(PLAYER_CAR, acsys.CS.LapCount)
     tracker.update(
-        fuel=fuel,
-        completed_laps=ac.getCarState(PLAYER_CAR, acsys.CS.LapCount),
+        fuel=physics.float_at(ac_memory.PHYSICS_FUEL),
+        completed_laps=completed_laps,
         in_pit_lane=bool(ac.isCarInPitline(PLAYER_CAR)),
+        lap_progress=ac.getCarState(PLAYER_CAR, acsys.CS.NormalizedSplinePosition),
+        lap_time_ms=ac.getCarState(PLAYER_CAR, acsys.CS.LapTime),
     )
 
-    ac.setText(labels["fuel"], format_litres(tracker.fuel))
-    ac.setText(labels["current"], format_litres(tracker.current_lap_used))
-    ac.setText(labels["last"], format_last_lap(tracker.last_lap))
-    ac.setText(labels["average"], format_average(tracker.average_used, tracker.average_lap_count))
+    per_lap = tracker.average_used
+    laps_to_go = laps_to_flag(session, completed_laps, tracker.lap_progress,
+                              tracker.average_lap_time_ms)
+    surplus = surplus_to_flag(tracker.fuel, laps_to_go, per_lap)
+    target = target_per_lap(tracker.lap_start_fuel, laps_to_go, tracker.lap_progress)
+    delta = lap_budget_delta(tracker.current_lap_used, target, tracker.lap_progress,
+                             tracker.reference_profile)
+
+    show("fuel", format_litres(tracker.fuel))
+    show("laps_left", format_laps(laps_of_fuel(tracker.fuel, per_lap)))
+    show("to_flag", format_surplus(surplus, per_lap), surplus_status(surplus, per_lap))
+    show("target", format_target(target))
+    show("current", format_current_lap(tracker.current_lap_used, delta),
+         lap_budget_status(delta, target))
+    show("last", format_last_lap(tracker.last_lap))
+    show("average", format_average(per_lap, tracker.average_lap_count))
 
 
 def acShutdown():
-    if physics_map is not None:
-        physics_map.close()
+    for block in (physics, graphics, static):
+        if block is not None:
+            block.close()
     ac.log("{}: acShutdown called".format(APP_NAME))
 
 
-def read_fuel():
-    if physics_map is None:
-        return None
-    return struct.unpack_from("<f", physics_map, PHYSICS_FUEL_OFFSET)[0]
+def read_session():
+    return SessionInfo(
+        session_type=graphics.int_at(ac_memory.GRAPHICS_SESSION),
+        total_laps=graphics.int_at(ac_memory.GRAPHICS_NUMBER_OF_LAPS),
+        time_left_ms=graphics.float_at(ac_memory.GRAPHICS_SESSION_TIME_LEFT),
+        is_timed_race=bool(static.int_at(ac_memory.STATIC_IS_TIMED_RACE)),
+        has_extra_lap=bool(static.int_at(ac_memory.STATIC_HAS_EXTRA_LAP)),
+    )
 
+
+def log_session_once(session):
+    # The shared memory offsets are taken from Kunos' struct layout but
+    # haven't been checked live yet: log what they read once, so a
+    # wrong offset shows up in py_log.txt as an implausible value.
+    global logged_session
+    if logged_session:
+        return
+    logged_session = True
+    ac.log("{}: session={} laps={} time_left_ms={:.0f} timed_race={} extra_lap={} fuel={:.2f}".format(
+        APP_NAME, session.session_type, session.total_laps, session.time_left_ms,
+        session.is_timed_race, session.has_extra_lap, physics.float_at(ac_memory.PHYSICS_FUEL)))
+
+
+def show(key, text, status=None):
+    ac.setText(labels[key], text)
+    r, g, b, a = STATUS_COLOURS[status]
+    ac.setFontColor(labels[key], r, g, b, a)

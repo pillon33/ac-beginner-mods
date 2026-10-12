@@ -8,7 +8,7 @@ projects. Two working "hello world" examples, plus a deploy helper.
 
 ```
 apps/python/hello_hud/     an in-game HUD app (AC's embedded Python)
-apps/python/fuel_hud/      in-game fuel HUD: tank, this lap, last lap, average
+apps/python/fuel_hud/      in-game fuel HUD: tank, laps left, fuel to the flag, lap budget
 telemetry/                 an external telemetry reader (your normal Python)
 scripts/deploy_app.py      copies an app folder into your AC install for testing
 tests/                     pytest suite for the game-independent logic
@@ -25,16 +25,39 @@ AC expects.
 
 ### `apps/python/fuel_hud`
 
-An in-game window with four numbers: fuel in the tank, fuel used so
-far this lap, fuel used on the last lap, and the average per lap over
-the last five laps that count. Laps are left out of the average (and
-labelled on the HUD) when they're the first lap, include a pit-lane
-visit or a refuel, or when the app started watching mid-lap.
+An in-game fuel window:
 
-`ac.getCarState()` has no fuel value, so the app reads the fuel level
-from AC's shared memory with `mmap` + `struct` (both built into AC's
-Python), with no bundled `_ctypes.pyd`. All lap bookkeeping lives in
-`fuel_logic.py`, which has no game calls and is covered by pytest.
+| Row | Example | Meaning |
+|---|---|---|
+| Tank | `51.80 L` | Fuel in the tank |
+| Laps left | `12.6` | How long the tank lasts at the average |
+| To flag | `-4.00 L (-1.0 laps)` | Fuel left over at the flag at the average. Green: a lap or more spare. Amber: under a lap spare. Red: you run dry first |
+| Target | `3.81 L/lap` | The most you can use per lap and still reach the flag |
+| This lap | `1.73 L (+0.04)` | Fuel used so far, and how far over (+) or under (-) the target budget for this point of the lap. Green: on or under budget. Amber: up to 2% of the target over. Red: more |
+| Last lap | `4.08 L` / `4.31 L (pit)` | Fuel used on the previous lap |
+| Average | `4.11 L (5 laps)` | Mean of the last 5 laps that count |
+
+Laps are left out of the averages (and labelled on the HUD) when
+they're the first lap, include a pit-lane visit or a refuel, or when
+the app started watching mid-lap.
+
+"To flag" and "Target" need to know where the flag is. In a lap race
+that's the race length. In a timed race, practice or qualifying it's
+the session clock divided by your average lap time, so these rows
+show `--` until the first lap that counts. Hotlap sessions have no
+flag.
+
+The "This lap" budget is spread over the lap following the fuel
+profile of your last valid lap, not evenly. Straights burn more than
+corners, so an even split would flag every straight as overspending.
+
+`ac.getCarState()` has no fuel value and nothing in the `ac` API
+gives the session length, so the app reads both from AC's shared
+memory with `mmap` + `struct` (both built into AC's Python), with no
+bundled `_ctypes.pyd`. The byte offsets live in `ac_memory.py`, and a
+test checks them against the ctypes structs in
+`telemetry/shared_memory.py`. All lap bookkeeping and race maths live
+in `fuel_logic.py`, which has no game calls and is covered by pytest.
 
 Fuel only drops if fuel consumption is enabled: in Content Manager,
 Drive → Assists → Fuel consumption, set to 1× (`FUEL_RATE` in
