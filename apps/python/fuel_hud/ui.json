@@ -1,0 +1,6 @@
+{
+    "name": "Fuel HUD",
+    "author": "Szymon Pilszek",
+    "version": "0.1.0",
+    "description": "Fuel in the tank, fuel used this lap and last lap, and the average per lap."
+}

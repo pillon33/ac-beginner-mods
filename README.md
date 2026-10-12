@@ -8,8 +8,10 @@ projects. Two working "hello world" examples, plus a deploy helper.
 
 ```
 apps/python/hello_hud/     an in-game HUD app (AC's embedded Python)
+apps/python/fuel_hud/      in-game fuel HUD: tank, this lap, last lap, average
 telemetry/                 an external telemetry reader (your normal Python)
 scripts/deploy_app.py      copies an app folder into your AC install for testing
+tests/                     pytest suite for the game-independent logic
 ```
 
 ### `apps/python/hello_hud`
@@ -20,6 +22,24 @@ anything that needs to draw over the game. No pip, no network,
 stdlib-only. Read the comments at the top of `hello_hud.py` — they
 explain the app lifecycle (`acMain` / `acUpdate` / `acShutdown`) that
 AC expects.
+
+### `apps/python/fuel_hud`
+
+An in-game window with four numbers: fuel in the tank, fuel used so
+far this lap, fuel used on the last lap, and the average per lap over
+the last five laps that count. Laps are left out of the average (and
+labelled on the HUD) when they're the first lap, include a pit-lane
+visit or a refuel, or when the app started watching mid-lap.
+
+`ac.getCarState()` has no fuel value, so the app reads the fuel level
+from AC's shared memory with `mmap` + `struct` (both built into AC's
+Python), with no bundled `_ctypes.pyd`. All lap bookkeeping lives in
+`fuel_logic.py`, which has no game calls and is covered by pytest.
+
+Fuel only drops if fuel consumption is enabled: in Content Manager,
+Drive → Assists → Fuel consumption, set to 1× (`FUEL_RATE` in
+`Documents\Assetto Corsa\cfg\assists.ini`). At 0 every lap reads
+0.00 L.
 
 ### `telemetry`
 
@@ -51,3 +71,18 @@ reading before you extend the struct definitions.
    python hello_telemetry.py
    ```
    You should see live speed/gear/lap data printing.
+
+## Tests
+
+The game-independent logic (anything without `ac.*` calls) is tested
+with pytest on a normal Python install:
+
+```
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+`tests/test_py33_compat.py` also checks every file under
+`apps/python/` for syntax AC's Python 3.3 can't run (f-strings,
+walrus, etc.), since modern Python would otherwise run those files in
+tests without complaint.
