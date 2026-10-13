@@ -1,0 +1,6 @@
+{
+    "name": "Pitwall",
+    "author": "Szymon Pilszek",
+    "version": "0.2.0",
+    "description": "Session stats in separate windows: fuel (tank, laps left, fuel to the flag, lap budget) and car (speed, gear)."
+}

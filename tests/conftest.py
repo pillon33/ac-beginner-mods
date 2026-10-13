@@ -1,14 +1,10 @@
-"""Make the in-game app folders and telemetry/ importable from tests.
-
-In-game apps aren't packages (AC loads them by folder), so tests put
-each app folder on sys.path the same way AC effectively does.
-"""
+"""Make the repo-root packages, telemetry/ and scripts/ importable from
+tests, the way the app, the external tools and the scripts see them."""
 
 import os
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-APPS_DIR = os.path.join(REPO_ROOT, "apps", "python")
 
-sys.path.insert(0, os.path.join(APPS_DIR, "fuel_hud"))
-sys.path.insert(0, os.path.join(REPO_ROOT, "telemetry"))
+for folder in (REPO_ROOT, os.path.join(REPO_ROOT, "telemetry"), os.path.join(REPO_ROOT, "scripts")):
+    sys.path.insert(0, folder)

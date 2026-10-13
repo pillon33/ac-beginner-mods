@@ -1,31 +1,28 @@
 # AC Modding Starter
 
-A starting point for writing Python tools for Assetto Corsa (the 2014
-Kunos sim, not Assetto Corsa EVO — see note below) as portfolio
-projects. Two working "hello world" examples, plus a deploy helper.
+Python tools for Assetto Corsa (the 2014 Kunos sim, not Assetto Corsa
+EVO, which has no scripting API) built as a portfolio project:
+**Pitwall**, an in-game app with a window per session stat, plus
+external telemetry tools that share its logic.
 
 ## What's here
 
 ```
-apps/python/hello_hud/     an in-game HUD app (AC's embedded Python)
-apps/python/fuel_hud/      in-game fuel HUD: tank, laps left, fuel to the flag, lap budget
-telemetry/                 an external telemetry reader (your normal Python)
-scripts/deploy_app.py      copies an app folder into your AC install for testing
-tests/                     pytest suite for the game-independent logic
+apps/python/pitwall/       Pitwall, the in-game app: one window per stat (AC's embedded Python 3.3)
+pitwall_core/              the logic behind it: pure Python 3.3, no game calls, shared with telemetry/
+content/gui/icons/         app-bar icons (placeholders), where AC expects them
+telemetry/                 external tools on your normal Python, reading AC's shared memory
+scripts/deploy_app.py      copies the app (plus pitwall_core) into your AC install
+scripts/gen_layout.py      generates pitwall_core/layout.py from telemetry's ctypes structs
+tests/                     pytest suite
 ```
 
-### `apps/python/hello_hud`
+## Pitwall
 
-Runs *inside* Assetto Corsa, using the game's own restricted Python
-3.3 runtime and its `ac` / `acsys` modules. Good for HUD widgets and
-anything that needs to draw over the game. No pip, no network,
-stdlib-only. Read the comments at the top of `hello_hud.py` — they
-explain the app lifecycle (`acMain` / `acUpdate` / `acShutdown`) that
-AC expects.
+One AC app, several windows. Each window has its own entry in AC's
+in-game app bar, so you show only the ones you want.
 
-### `apps/python/fuel_hud`
-
-An in-game fuel window:
+### Fuel window
 
 | Row | Example | Meaning |
 |---|---|---|
@@ -37,75 +34,99 @@ An in-game fuel window:
 | Last lap | `4.08 L` / `4.31 L (pit)` | Fuel used on the previous lap |
 | Average | `4.11 L (5 laps)` | Mean of the last 5 laps that count |
 
-Laps are left out of the averages (and labelled on the HUD) when
-they're the first lap, include a pit-lane visit or a refuel, or when
-the app started watching mid-lap.
+Laps are left out of the averages (and labelled) when they're the
+first lap, include a pit-lane visit or a refuel, or when the app
+started watching mid-lap.
 
 "To flag" and "Target" need to know where the flag is. In a lap race
 that's the race length. In a timed race, practice or qualifying it's
-the session clock divided by your average lap time, so these rows
-show `--` until the first lap that counts. Hotlap sessions have no
-flag.
+the session clock divided by your average lap time, so these rows show
+`--` until the first lap that counts. Hotlap sessions have no flag.
 
-The "This lap" budget is spread over the lap following the fuel
-profile of your last valid lap, not evenly. Straights burn more than
-corners, so an even split would flag every straight as overspending.
+The "This lap" budget follows the fuel profile of your last valid lap
+rather than an even split: straights burn more than corners, so an
+even split would flag every straight as overspending.
 
-`ac.getCarState()` has no fuel value and nothing in the `ac` API
-gives the session length, so the app reads both from AC's shared
-memory with `mmap` + `struct` (both built into AC's Python), with no
-bundled `_ctypes.pyd`. The byte offsets live in `ac_memory.py`, and a
-test checks them against the ctypes structs in
-`telemetry/shared_memory.py`. All lap bookkeeping and race maths live
-in `fuel_logic.py`, which has no game calls and is covered by pytest.
+Fuel only drops if fuel consumption is on: Content Manager → Assists →
+Fuel consumption 1× (`FUEL_RATE` in
+`Documents\Assetto Corsa\cfg\assists.ini`).
 
-Fuel only drops if fuel consumption is enabled: in Content Manager,
-Drive → Assists → Fuel consumption, set to 1× (`FUEL_RATE` in
-`Documents\Assetto Corsa\cfg\assists.ini`). At 0 every lap reads
-0.00 L.
+### Car window
 
-### `telemetry`
+Speed and gear.
 
-Runs *outside* the game, as a completely normal Python process — any
-Python version, any library, pip works fine. It reads AC's live
-telemetry via Windows shared memory. This is the approach a project
-like an AI race engineer needs, since it can call APIs, run
-text-to-speech, etc. — things the in-game runtime can't do.
-`shared_memory.py` has a longer accuracy note at the top worth
-reading before you extend the struct definitions.
+### How it's built
+
+```
+AC shared memory + ac API
+        │  pitwall_hud/ac_frame.py      the only code that reads the game
+        ▼
+      Frame  ──►  RaceState             one LapTracker + FuelTracker for every window
+                     │
+                     ▼
+        pitwall_core/windows.py         each window's rows and readout: {row: (text, status)}
+                     │
+                     ▼
+        pitwall_hud/stat_window.py      draws labels and colours
+```
+
+- **All logic is in `pitwall_core`**: lap bookkeeping, fuel and race
+  maths, formatting. It has no `ac` calls, so pytest covers it, and the
+  external tools can import the same code. It's written for Python 3.3
+  because AC loads it too.
+- **One shared state.** The app reads the game once per frame and every
+  window renders from the same trackers, so windows can't disagree
+  about which lap it is or which laps count.
+- **Shared memory without ctypes.** `ac.getCarState()` has no fuel or
+  session-length values, and AC's Python ships without ctypes. So
+  `pitwall_core/memory.py` reads shared memory with `mmap` + `struct`
+  at byte offsets from `layout.py`. That file is generated from the
+  ctypes structs in `telemetry/shared_memory.py`, the single
+  definition of AC's memory layout, and a test fails if it's stale.
+- **Unique package names.** All AC Python apps share one interpreter
+  and module cache, so `pitwall_core` and `pitwall_hud` are named to
+  avoid colliding with other apps' modules.
+
+Adding a window: write a readout in `pitwall_core/windows.py`, add a
+`WindowSpec` to `WINDOWS`, and add `<window>_ON.png` / `_OFF.png`
+(64×64) to `content/gui/icons/`. A test checks every window has both.
+
+## telemetry
+
+Runs *outside* the game as a normal Python process (any version, pip
+works). It reads AC's shared memory with ctypes, which is the right
+place for anything the in-game runtime can't do: logging to disk,
+dashboards, LLM calls, text-to-speech. `shared_memory.py` explains
+how to extend the structs safely.
 
 ## Quickstart
 
-1. Install Assetto Corsa (Steam) and Content Manager if you haven't —
-   Content Manager isn't required but makes launching practice
-   sessions and installing apps much less tedious than the stock
-   launcher.
-2. Deploy the example HUD app:
+1. Install Assetto Corsa (Steam), and optionally Content Manager.
+2. Deploy Pitwall:
    ```
-   python scripts/deploy_app.py hello_hud
+   python scripts/deploy_app.py pitwall
    ```
    (pass `--ac-dir` if it can't find your install automatically)
-3. In AC: Options > General > enable `hello_hud` in the apps list.
-4. Start any practice session — the HUD should appear showing speed
-   and gear.
+3. In AC: Options → General → enable `pitwall` in the apps list.
+4. Start a session and open the Fuel and Car windows from the app bar
+   on the right edge of the screen.
 5. With a session running, in a separate terminal:
    ```
    cd telemetry
    python hello_telemetry.py
    ```
-   You should see live speed/gear/lap data printing.
 
-## Tests
-
-The game-independent logic (anything without `ac.*` calls) is tested
-with pytest on a normal Python install:
+## Development
 
 ```
 pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-`tests/test_py33_compat.py` also checks every file under
-`apps/python/` for syntax AC's Python 3.3 can't run (f-strings,
-walrus, etc.), since modern Python would otherwise run those files in
-tests without complaint.
+- `tests/test_app.py` runs the app's `acMain` / `acUpdate` lifecycle
+  with stand-in `ac` modules, so wiring errors show up without
+  starting the game.
+- `tests/test_py33_compat.py` rejects syntax AC's Python 3.3 can't run
+  (f-strings, walrus, ...) in everything AC loads.
+- After changing a struct in `telemetry/shared_memory.py`, run
+  `python scripts/gen_layout.py`.
