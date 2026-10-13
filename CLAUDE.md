@@ -36,12 +36,13 @@ syntax error on AC's Python 3.3.
 
 ```
 apps/python/hello_hud/hello_hud.py   in-game HUD app: shows live speed + gear
-apps/python/fuel_hud/fuel_hud.py     in-game fuel HUD (tank / this lap / last lap / avg); reads fuel from shared memory via mmap+struct at byte offset 12, lap count + pit lane via ac API
-apps/python/fuel_hud/fuel_logic.py   FuelTracker + formatters: pure, Python-3.3-compatible, imported by the HUD and by tests
+apps/python/fuel_hud/fuel_hud.py     in-game fuel HUD (tank / laps left / to flag / target / this lap vs budget / last lap / avg); lap count, lap progress, lap time, pit lane via ac API; colours via ac.setFontColor
+apps/python/fuel_hud/ac_memory.py    in-game shared memory reader: mmap+struct at hard-coded byte offsets (fuel, session, time left, race laps, timed race, extra lap); offsets tested against telemetry/shared_memory.py structs
+apps/python/fuel_hud/fuel_logic.py   FuelTracker (laps, lap times, reference fuel profile) + race maths + statuses + formatters: pure, Python-3.3-compatible, imported by the HUD and by tests
 tests/                               pytest suite (conftest.py puts app folders on sys.path); test_py33_compat.py rejects 3.6+ syntax under apps/python
 requirements-dev.txt                 pytest
 apps/python/hello_hud/ui.json        optional metadata AC/Content Manager can display (name, author, version, description) — not required for the app to function
-telemetry/shared_memory.py           ctypes structs (SPageFilePhysics, SPageFileGraphic) + ACTelemetry class that opens AC's "Local\acpmf_physics" / "Local\acpmf_graphics" mmap blocks, Windows-only
+telemetry/shared_memory.py           ctypes structs (SPageFilePhysics, SPageFileGraphic through numberOfLaps, SPageFileStatic through hasExtraLap) + ACTelemetry class that opens AC's "Local\acpmf_physics" / "Local\acpmf_graphics" / "Local\acpmf_static" mmap blocks, Windows-only
 telemetry/hello_telemetry.py         polls ACTelemetry in a loop, prints status/session/speed/gear/rpm/lap/position — the external "hello world"
 scripts/deploy_app.py                copies (or --link symlinks) an apps/python/<name> folder into a real AC install for playtesting; reads --ac-dir or AC_INSTALL_DIR env var, falls back to common Steam paths
 README.md, .gitignore

@@ -87,9 +87,61 @@ class SPageFileGraphic(ctypes.Structure):
         ("iCurrentTime", ctypes.c_int32),  # current lap time, milliseconds
         ("iLastTime", ctypes.c_int32),
         ("iBestTime", ctypes.c_int32),
-        # Graphics has many more fields after this point (fuel
-        # warnings, flags, tyre compound...) — same rule: verify
+        ("sessionTimeLeft", ctypes.c_float),  # milliseconds
+        ("distanceTraveled", ctypes.c_float),  # metres, this session
+        ("isInPit", ctypes.c_int32),
+        ("currentSectorIndex", ctypes.c_int32),
+        ("lastSectorTime", ctypes.c_int32),
+        ("numberOfLaps", ctypes.c_int32),      # race length for lap races
+        # Graphics has more fields after this point (tyre compound,
+        # normalized car position, flags...) — same rule: verify
         # against the SDK reference before adding them.
+    ]
+
+
+class SPageFileStatic(ctypes.Structure):
+    """Session constants: written once when a session loads."""
+    _fields_ = [
+        ("smVersion", ctypes.c_wchar * 15),
+        ("acVersion", ctypes.c_wchar * 15),
+        ("numberOfSessions", ctypes.c_int32),
+        ("numCars", ctypes.c_int32),
+        ("carModel", ctypes.c_wchar * 33),
+        ("track", ctypes.c_wchar * 33),
+        ("playerName", ctypes.c_wchar * 33),
+        ("playerSurname", ctypes.c_wchar * 33),
+        ("playerNick", ctypes.c_wchar * 33),
+        ("sectorCount", ctypes.c_int32),
+        ("maxTorque", ctypes.c_float),
+        ("maxPower", ctypes.c_float),
+        ("maxRpm", ctypes.c_int32),
+        ("maxFuel", ctypes.c_float),               # tank capacity, litres
+        ("suspensionMaxTravel", ctypes.c_float * 4),
+        ("tyreRadius", ctypes.c_float * 4),
+        ("maxTurboBoost", ctypes.c_float),
+        ("airTemp", ctypes.c_float),
+        ("roadTemp", ctypes.c_float),
+        ("penaltiesEnabled", ctypes.c_int32),
+        ("aidFuelRate", ctypes.c_float),           # fuel consumption multiplier, 0 = off
+        ("aidTireRate", ctypes.c_float),
+        ("aidMechanicalDamage", ctypes.c_float),
+        ("aidAllowTyreBlankets", ctypes.c_int32),
+        ("aidStability", ctypes.c_float),
+        ("aidAutoClutch", ctypes.c_int32),
+        ("aidAutoBlip", ctypes.c_int32),
+        ("hasDRS", ctypes.c_int32),
+        ("hasERS", ctypes.c_int32),
+        ("hasKERS", ctypes.c_int32),
+        ("kersMaxJ", ctypes.c_float),
+        ("engineBrakeSettingsCount", ctypes.c_int32),
+        ("ersPowerControllerCount", ctypes.c_int32),
+        ("trackSPlineLength", ctypes.c_float),     # lap length, metres
+        ("trackConfiguration", ctypes.c_wchar * 33),
+        ("ersMaxJ", ctypes.c_float),
+        ("isTimedRace", ctypes.c_int32),
+        ("hasExtraLap", ctypes.c_int32),
+        # Static has a few more fields after this point (car skin,
+        # reversed grid, pit window) — verify before adding.
     ]
 
 
@@ -101,12 +153,13 @@ AC_SESSION_TYPE = {
 
 
 class ACTelemetry:
-    """Opens AC's physics + graphics shared memory blocks and exposes
-    their current values. Use as a context manager so the memory maps
-    always get closed:
+    """Opens AC's physics, graphics and static shared memory blocks and
+    exposes their current values. Use as a context manager so the
+    memory maps always get closed:
 
         with ACTelemetry() as ac_telemetry:
             physics, graphics = ac_telemetry.read()
+            static = ac_telemetry.read_static()   # once per session
     """
 
     def __init__(self):
@@ -118,15 +171,23 @@ class ACTelemetry:
             -1, ctypes.sizeof(SPageFileGraphic),
             tagname="Local\\acpmf_graphics", access=mmap.ACCESS_READ,
         )
+        self._static_mm = mmap.mmap(
+            -1, ctypes.sizeof(SPageFileStatic),
+            tagname="Local\\acpmf_static", access=mmap.ACCESS_READ,
+        )
 
     def read(self):
         physics = SPageFilePhysics.from_buffer_copy(self._physics_mm)
         graphics = SPageFileGraphic.from_buffer_copy(self._graphics_mm)
         return physics, graphics
 
+    def read_static(self):
+        return SPageFileStatic.from_buffer_copy(self._static_mm)
+
     def close(self):
         self._physics_mm.close()
         self._graphics_mm.close()
+        self._static_mm.close()
 
     def __enter__(self):
         return self
