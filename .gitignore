@@ -4,3 +4,5 @@ __pycache__/
 .idea/
 *.log
 .pytest_cache/
+# Shared packages linked into app folders by deploy_app.py --link
+apps/python/*/pitwall_core

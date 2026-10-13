@@ -13,9 +13,16 @@ Usage:
     (Ctrl+C to stop)
 """
 
+import os
+import sys
 import time
 
 from shared_memory import AC_SESSION_TYPE, AC_STATUS, ACTelemetry
+
+# pitwall_core (the logic the in-game app uses) lives at the repo root.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from pitwall_core.display import format_gear  # noqa: E402
 
 
 def main():
@@ -32,7 +39,7 @@ def main():
                     "\r{:>6} | {:>9} | speed {:5.0f} km/h | gear {:>2} | "
                     "rpm {:5d} | lap {:>2} | pos {:>2}".format(
                         status, session, physics.speedKmh,
-                        gear_to_string(physics.gear), physics.rpms,
+                        format_gear(physics.gear), physics.rpms,
                         graphics.completedLaps, graphics.position,
                     ),
                     end="",
@@ -41,14 +48,6 @@ def main():
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("\nStopped.")
-
-
-def gear_to_string(gear):
-    if gear == 0:
-        return "R"
-    if gear == 1:
-        return "N"
-    return str(gear - 1)
 
 
 if __name__ == "__main__":

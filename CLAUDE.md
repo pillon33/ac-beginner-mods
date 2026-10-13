@@ -28,16 +28,20 @@ any non-stdlib package, it belongs in `telemetry/` (or a new sibling
 external-tool folder), never in `apps/python/`. Conversely, drawing an
 in-game HUD overlay can only happen in `apps/python/`.
 
-**Code style inside `apps/python/**`:** use `.format()` or `%`
-formatting, not f-strings — an f-string crashes the app with a
-syntax error on AC's Python 3.3. `tests/test_py33_compat.py` catches
-this.
+**`pitwall_core/` runs in both:** AC loads it (deployed into the app)
+and telemetry/tests import it. It follows the in-game rules (3.3,
+stdlib only) and additionally never imports `ac`, `acsys` or ctypes.
+
+**Code style inside `apps/python/**` and `pitwall_core/**`:** use
+`.format()` or `%` formatting, not f-strings — an f-string crashes the
+app with a syntax error on AC's Python 3.3.
+`tests/test_py33_compat.py` catches this.
 
 ## In-game runtime facts (verified in-game 2026-10-13, AC + CSP 0.2.11)
 
 - **No ctypes in-game.** AC's Python 3.3.5 has `mmap` and `_struct`
   built in but ships no `_ctypes.pyd`. Read shared memory with
-  `struct.unpack_from` at byte offsets (see `fuel_hud/ac_memory.py`);
+  `struct.unpack_from` at byte offsets (see `pitwall_core/memory.py`);
   don't bundle a `.pyd`.
 - **`acsys.CS` is a fixed list.** `<AC install>\apps\python\system\acsys.py`
   is the authoritative list (73 entries). Check it before using any
@@ -52,8 +56,10 @@ this.
 - **`acUpdate` runs once per app per frame**, however many windows the
   app has.
 - **One app can own several windows.** Each `ac.newApp` window gets its
-  own app-bar entry and is shown or hidden independently. AC looks for
-  an icon texture per window name (`<window>_ICON`).
+  own app-bar entry and is shown or hidden independently. Its icons are
+  `<AC install>\content\gui\icons\<window name>_ON.png` / `_OFF.png`
+  (64×64 RGBA; built-ins use a white glyph, on a red disc for `_ON`).
+  Built-in names like `CAR_STATS` exist, another reason for prefixes.
 - **Don't rely on `ac.addOnAppActivatedListener` /
   `addOnAppDismissedListener`.** They never fired when windows were
   toggled.
@@ -66,31 +72,38 @@ per stat, not one app folder per stat. Strategy needs fuel, tyre and
 lap state together, and one app means one lap tracker, one
 shared-memory read per frame, and no module collisions.
 
-Target structure (refactor **not started yet**; `fuel_hud` is still
-standalone):
-- A pure, Python 3.3-compatible shared package with a project-unique
-  name (lap tracking, fuel maths, memory layout). `deploy_app.py`
-  copies it into the app. `telemetry/` imports it directly, so the
-  HUD and the external dashboard share the same logic.
-- `telemetry/shared_memory.py` ctypes structs are the **single source
-  of truth** for the memory layout. In-game offsets are generated from
-  them by a script, and a test fails if the generated file is out of
-  date. Never hand-edit offsets.
-- Window modules are thin views; all logic lives in the shared
-  package.
+The app is **Pitwall** (`apps/python/pitwall`). Per frame:
+`pitwall_hud/ac_frame.py` reads the game into a `Frame` →
+`RaceState.update()` (one `LapTracker` + `FuelTracker` shared by all
+windows) → each window's readout in `pitwall_core/windows.py` returns
+`{row: (text, status)}` → `pitwall_hud/stat_window.py` draws it.
+- **All logic lives in `pitwall_core`** (repo root). `deploy_app.py`
+  copies it into the app (or symlinks it with `--link`); telemetry
+  imports it directly. `pitwall_hud` is the only code calling `ac`.
+- **Memory layout source of truth:** the ctypes structs in
+  `telemetry/shared_memory.py`. `scripts/gen_layout.py` generates
+  `pitwall_core/layout.py` from them; `tests/test_layout.py` fails if
+  it's stale. Never hand-edit offsets.
+- **New window:** write a readout in `pitwall_core/windows.py` and add a
+  `WindowSpec` to `WINDOWS`, plus its two icons in
+  `content/gui/icons/` (a test enforces them). Window names start
+  with `pitwall_` (AC window names are global). New state that several
+  windows need goes in `RaceState`.
+- One broken window is logged once and skipped; the others keep
+  drawing.
 
 ## Repo layout
 
 ```
-apps/python/hello_hud/hello_hud.py   in-game HUD app: shows live speed + gear
-apps/python/hello_hud/ui.json        optional metadata AC/Content Manager can display — not required for the app to function
-apps/python/fuel_hud/fuel_hud.py     in-game fuel HUD (tank / laps left / to flag / target / this lap vs budget / last lap / avg); lap count, progress, lap time, pit lane via ac API; colours via ac.setFontColor
-apps/python/fuel_hud/ac_memory.py    in-game shared memory reader: mmap+struct at hard-coded byte offsets, tested against telemetry/shared_memory.py structs
-apps/python/fuel_hud/fuel_logic.py   FuelTracker (laps, lap times, reference fuel profile) + race maths + statuses + formatters: pure, Python-3.3-compatible
-telemetry/shared_memory.py           ctypes structs (physics; graphics through numberOfLaps; static through hasExtraLap) + ACTelemetry (physics/graphics/static mmap blocks), Windows-only
-telemetry/hello_telemetry.py         polls ACTelemetry in a loop and prints live values — the external "hello world"
-scripts/deploy_app.py                copies (or --link symlinks) apps/python/<name> into the AC install; --ac-dir or AC_INSTALL_DIR
-tests/                               pytest (conftest.py puts app folders + telemetry/ on sys.path); run: pip install -r requirements-dev.txt && python -m pytest
+apps/python/pitwall/pitwall.py       AC entry point (acMain/acUpdate/acShutdown): read frame, update state, render windows
+apps/python/pitwall/pitwall_hud/     the only ac-calling code: ac_frame.py (game -> Frame), stat_window.py (WindowSpec -> AC labels)
+pitwall_core/                        pure shared logic: layout (generated), memory, laps, race, fuel, state, display, windows
+content/gui/icons/                   app-bar icons (<window>_ON/_OFF.png, placeholders); mirrors the AC install path, deploy copies them
+telemetry/shared_memory.py           ctypes structs (layout source of truth) + BLOCKS + ACTelemetry, Windows-only
+telemetry/hello_telemetry.py         polls ACTelemetry and prints live values; imports pitwall_core
+scripts/deploy_app.py                copies (or --link symlinks) apps/python/<name> + pitwall_core into the AC install, plus <name>_*.png icons; --ac-dir or AC_INSTALL_DIR
+scripts/gen_layout.py                ctypes structs -> pitwall_core/layout.py (--check to verify)
+tests/                               pytest; test_app.py runs the app lifecycle with stand-in ac modules; run: pip install -r requirements-dev.txt && python -m pytest
 docs/                                untracked local design notes (fuel dashboard spec), not committed
 (no LICENSE yet — removed on purpose while this stays personal/private; add MIT back before sharing publicly)
 ```
@@ -102,11 +115,12 @@ byte-for-byte, or later fields silently read garbage. The Kunos SDK
 reference folder (`sdk\dev\shared memory\`) is **not** in this
 install. The layout was taken from `sim_info.py` in
 [albertowd/live-telemetry](https://github.com/albertowd/live-telemetry)
-(AC SDK 1.14.3). Live status: physics `fuel` and graphics `session`
-are confirmed. Graphics `numberOfLaps` / `sessionTimeLeft` and static
-`isTimedRace` / `hasExtraLap` are still unconfirmed; check them in a
-lap-limited race and a timed session. `fuel_hud` logs what it reads
-once per session to `py_log.txt`.
+(AC SDK 1.14.3). Live status: physics `fuel`, graphics `session`, and
+the static block through `trackConfiguration` (AC 1.16.4, shared
+memory 1.7) are confirmed. Graphics `numberOfLaps` / `sessionTimeLeft`
+and static `isTimedRace` / `hasExtraLap` are still unconfirmed; check
+them in a lap-limited race and a timed session. Pitwall logs what it
+reads once per session to `py_log.txt`.
 
 ## Environment / paths (user-specific, not portable)
 
@@ -130,11 +144,11 @@ once per session to `py_log.txt`.
 ## reasoning/detail behind any phase, this is just the checklist)
 
 - [x] **FP1 — Fundamentals (Week 1):** first in-game app running
-      end to end (`hello_hud`), comfortable with the deploy/test loop.
-      Next: add a shift light + lap counter, push to GitHub.
+      end to end (`hello_hud`, now Pitwall's Car window), comfortable
+      with the deploy/test loop.
 - [ ] **FP2 — Telemetry logic (Week 2):** delta-to-best-lap, fuel
-      estimate. Fuel estimate done (`fuel_hud`, PRs #2–#3); next is the
-      suite refactor above, then delta-to-best-lap. Key constraint:
+      estimate. Fuel estimate and the Pitwall suite refactor are done;
+      next is delta-to-best-lap as a new window. Key constraint:
       keep the math in plain functions with no `ac.*` calls inside
       them, so they're unit-testable with pytest.
 - [ ] **Quali — External tools (Weeks 3-4):** extend
