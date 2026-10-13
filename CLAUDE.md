@@ -60,6 +60,11 @@ app with a syntax error on AC's Python 3.3.
   `<AC install>\content\gui\icons\<window name>_ON.png` / `_OFF.png`
   (64×64 RGBA; built-ins use a white glyph, on a red disc for `_ON`).
   Built-in names like `CAR_STATS` exist, another reason for prefixes.
+  The **title-bar** icon is different: AC draws its built-in logo
+  (`content/gui/inapp_aclogo.png`) in every window, with no per-window
+  setting. To replace it, hide it with `ac.setIconPosition(window, 0,
+  -10000)` and draw a label with `ac.setBackgroundTexture` (see
+  `pitwall_hud/stat_window.py`).
 - **Don't rely on `ac.addOnAppActivatedListener` /
   `addOnAppDismissedListener`.** They never fired when windows were
   toggled.

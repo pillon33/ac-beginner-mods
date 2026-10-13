@@ -27,6 +27,8 @@ class FakeAC(object):
         self.windows = {}
         self.texts = {}
         self.colours = {}
+        self.textures = {}
+        self.icon_positions = {}
         self.logs = []
         self._next_id = 0
 
@@ -58,6 +60,12 @@ class FakeAC(object):
 
     def log(self, message):
         self.logs.append(message)
+
+    def setBackgroundTexture(self, control, path):
+        self.textures[control] = path
+
+    def setIconPosition(self, window, x, y):
+        self.icon_positions[window] = (x, y)
 
     def setTitle(self, *args):
         pass
@@ -132,6 +140,20 @@ def test_app_lifecycle_draws_every_window(app):
     assert not module.failed_windows
 
     module.acShutdown()
+
+
+def test_each_window_swaps_the_ac_logo_for_its_own_icon(app):
+    module, fake_ac = app
+    module.acMain("1.16")
+
+    # AC's logo is moved out of view in every window...
+    assert set(fake_ac.icon_positions) == set(fake_ac.windows.values())
+    assert all(y < -1000 for _, y in fake_ac.icon_positions.values())
+    # ...and each window draws its own icon, from a file deploy installs.
+    textures = sorted(fake_ac.textures.values())
+    assert textures == ["content/gui/icons/pitwall_car_ON.png", "content/gui/icons/pitwall_fuel_ON.png"]
+    for path in textures:
+        assert os.path.isfile(os.path.join(REPO_ROOT, path))
 
 
 def test_a_failing_window_is_logged_once_and_the_others_keep_drawing(app, monkeypatch):
