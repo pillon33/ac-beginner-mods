@@ -186,8 +186,9 @@ reads once per session to `py_log.txt`.
 
 ## Working with GitHub (read this before touching git/GitHub here)
 
-- **Repo:** `pillon33/ac-beginner-mods` on github.com, remote `origin`,
-  default branch `main`.
+- **Repo:** `pillon33/ac-pitwall-mod` on github.com, remote `origin`,
+  default branch `main`. Renamed from `ac-beginner-mods` on 2026-10-27;
+  GitHub redirects the old URL, but use the new one.
 - **Workflow:** Claude does not push directly to `main`. For any
   change: create a branch, push to it, open a pull request, and let
   Szymon review/merge. (One early exception — a direct push to `main`
@@ -216,7 +217,7 @@ and push access. Repo settings can't fix it.
 
 **Fix that worked for this repo:** install the separate **"Claude"
 GitHub App** (`github.com/apps/claude`, distinct from the OAuth-based
-"Claude Github MCP Connector") with access to `ac-beginner-mods`, then
+"Claude Github MCP Connector") with access to `ac-pitwall-mod`, then
 retry; propagation can take a moment. If fresh 403s appear in a later
 session, first check the app is still installed with access to this
 repo.
