@@ -24,9 +24,19 @@ start/finish crossing, if the lap was clean (no pit lane, no position
 jumps or reversals) they are merged into the session bests and the
 reference lap is rebuilt from the best segment of every mini-sector
 joined end to end, so it ends exactly at the theoretical best. A lap
-that is not clean contributes nothing. The reference only ever changes
+that is not clean contributes nothing. (From a grid or hotlap start the
+first lap, which ends at the first crossing, is such an out lap: its
+position is not trusted and none of its slices count.) The reference only ever changes
 at the line, so the delta and the theoretical best shown during a lap
 all refer to the same reference.
+
+MINI-SECTOR BOXES
+------------------
+`slice_statuses` gives one status per mini-sector for the lap being
+driven (display.slice_status of each slice's time against the frozen
+reference's time for that slice; None for slices not driven yet, not
+counted, or without a reference). When a lap finishes its statuses
+stay up until the first slice of the next lap has been completed.
 
 LIVE DELTA
 -----------
@@ -39,6 +49,8 @@ at the next start/finish crossing.
 """
 
 from bisect import bisect_left
+
+from pitwall_core.display import slice_status
 
 MINI_SECTORS = 20       # equal slices of the lap by normalized position
 SAMPLE_STEP = 0.005     # fraction of the lap between trace samples
@@ -100,6 +112,9 @@ class MiniSectorTracker(object):
         self._reference = None       # frozen until the next start/finish crossing
         self._theoretical_ms = None
         self._pending = {}           # this lap's counted mini-sectors
+        self._ref_ms = {}            # slice bests as of the last line crossing
+        self._lap_boxes = [None] * self.count
+        self._last_boxes = [None] * self.count
         self._lap_ok = True          # clean so far: may feed the reference
         self._delta_ok = True
         self._prev = None            # (position, lap time) of the last frame
@@ -110,7 +125,8 @@ class MiniSectorTracker(object):
         self._watched = False
         self._tainted = False
 
-    def update(self, in_pit_lane, lap_progress, lap_time_ms, restarted=False):
+    def update(self, in_pit_lane, lap_progress, lap_time_ms, restarted=False,
+               line_crossed=False):
         if restarted:
             self.reset()
         self.delta_ms = None
@@ -125,6 +141,13 @@ class MiniSectorTracker(object):
             self._prev = current
         else:
             self._advance(self._prev, current)
+        if line_crossed and lap_progress < WRAP_TO and not (self._mini == 0 and self._watched):
+            # The lap tracker saw the line but the position never wrapped
+            # in our eyes (it is held at 0 until the line on a grid or
+            # hotlap start): the lap ahead is watched from its very
+            # start, on a lap clock that is 0 at the line.
+            self._end_lap()
+            self._open(0, 0.0, 0.0, watched=True)
         if in_pit_lane:
             self._pit()      # also spoils a slice (and lap) just entered
         self._set_delta(lap_progress, lap_time_ms)
@@ -134,6 +157,14 @@ class MiniSectorTracker(object):
         """Sum of the best time of every mini-sector in the reference
         lap, or None until there is one. Changes only at the line."""
         return self._theoretical_ms
+
+    @property
+    def slice_statuses(self):
+        """One status (or None) per mini-sector: the current lap's, or
+        the finished lap's until the new lap completes a slice."""
+        if any(status is not None for status in self._lap_boxes):
+            return list(self._lap_boxes)
+        return list(self._last_boxes)
 
     # -- per frame -------------------------------------------------
 
@@ -227,6 +258,9 @@ class MiniSectorTracker(object):
         trace = [(p, t) for p, t in self._trace if t < elapsed]
         trace.append((position, elapsed))
         self._pending[self._mini] = (elapsed, trace)
+        reference = self._ref_ms.get(self._mini)
+        if reference is not None:
+            self._lap_boxes[self._mini] = slice_status(elapsed - reference)
 
     def _end_lap(self):
         """Start/finish crossing: promote a clean lap's mini-sectors
@@ -236,9 +270,13 @@ class MiniSectorTracker(object):
                 if index not in self.best_ms or ms < self.best_ms[index]:
                     self.best_ms[index] = ms
                     self.best_trace[index] = trace
+            self._ref_ms = dict(self.best_ms)
             self._reference = build_reference(self.best_trace, self.best_ms, self.count)
             if self._reference is not None:
                 self._theoretical_ms = self._reference[-1][1]
+        if any(status is not None for status in self._lap_boxes):
+            self._last_boxes = self._lap_boxes
+        self._lap_boxes = [None] * self.count
         self._pending = {}
         self._lap_ok = True
         self._delta_ok = True

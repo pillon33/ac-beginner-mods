@@ -44,8 +44,8 @@ class RaceState(object):
         lap_update = self.laps.update(frame.completed_laps, frame.in_pit_lane,
                                       frame.lap_progress, frame.lap_time_ms)
         self.fuel.update(frame.fuel, lap_update, self.laps.lap_progress)
-        self.sectors.update(frame.in_pit_lane, self.laps.lap_progress, frame.lap_time_ms,
-                            lap_update.restarted)
+        self.sectors.update(frame.in_pit_lane, self.laps.lap_progress, self.laps.lap_time_ms,
+                            lap_update.restarted, lap_update.closed_lap is not None)
 
     @property
     def laps_to_flag(self):

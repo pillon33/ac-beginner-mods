@@ -12,6 +12,7 @@ from pitwall_core.display import (
     delta_status, format_average, format_current_lap, format_delta, format_fuel_lap, format_gear,
     format_lap_time, format_laps, format_litres, format_speed, format_surplus, format_target,
 )
+from pitwall_core.sectors import MINI_SECTORS
 from pitwall_core.fuel import (
     lap_budget_delta, lap_budget_status, laps_of_fuel, surplus_status, surplus_to_flag,
     target_per_lap,
@@ -20,7 +21,7 @@ from pitwall_core.fuel import (
 
 class WindowSpec(object):
 
-    def __init__(self, name, title, rows, readout, width=270):
+    def __init__(self, name, title, rows, readout, width=270, boxes=None):
         # `name` is AC's id for the window: it's what the app bar
         # shows and what AC looks for an icon by. Prefixed, because
         # it has to be unique across every installed app.
@@ -29,6 +30,10 @@ class WindowSpec(object):
         self.rows = rows
         self.readout = readout
         self.width = width
+        # Optional row of coloured boxes under the rows: a function from
+        # the RaceState to a list of statuses (None = empty box).
+        self.boxes = boxes
+        self.box_count = MINI_SECTORS if boxes is not None else 0
 
 
 FUEL_ROWS = [
@@ -104,14 +109,24 @@ def time_readout(state):
     theoretical = sectors.theoretical_best_ms
     delta = sectors.delta_ms
     return {
-        "lap": (format_lap_time(state.frame.lap_time_ms), None),
+        "lap": (format_lap_time(state.laps.lap_time_ms), None),
         "theoretical": (format_lap_time(theoretical), None),
         "delta": (format_delta(delta), delta_status(delta)),
     }
 
 
+def time_boxes(state):
+    """One status per mini-sector for the lap being driven (purple =
+    faster than its reference, green within 0.05 s, yellow within
+    0.20 s, red beyond; None = not driven yet). After the line the
+    finished lap stays up until the new lap completes its first slice.
+    See display.slice_status."""
+    return state.sectors.slice_statuses
+
+
 WINDOWS = (
     WindowSpec("pitwall_fuel", "Fuel", FUEL_ROWS, fuel_readout),
-    WindowSpec("pitwall_time", "Time", TIME_ROWS, time_readout, width=230),
+    WindowSpec("pitwall_time", "Time", TIME_ROWS, time_readout, width=230,
+               boxes=time_boxes),
     WindowSpec("pitwall_car", "Car", CAR_ROWS, car_readout, width=200),
 )

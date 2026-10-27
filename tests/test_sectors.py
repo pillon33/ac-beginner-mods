@@ -1,11 +1,11 @@
 import pytest
 
 from pitwall_core.display import (
-    STATUS_BAD, STATUS_GOOD, STATUS_WARN, delta_status, format_delta, format_lap_time,
+    BOX_GOOD_MS, BOX_WARN_MS, STATUS_BAD, STATUS_BEST, slice_status, STATUS_GOOD, STATUS_WARN, delta_status, format_delta, format_lap_time,
 )
 from pitwall_core.sectors import MINI_SECTORS, MiniSectorTracker, build_reference, interpolate
 from pitwall_core.state import Frame, RaceState
-from pitwall_core.windows import time_readout
+from pitwall_core.windows import time_boxes, time_readout
 
 N = MINI_SECTORS
 STEPS = 5            # frames per mini-sector
@@ -317,3 +317,89 @@ def test_formatting_and_status():
     assert delta_status(0) == STATUS_GOOD
     assert delta_status(500) == STATUS_WARN
     assert delta_status(501) == STATUS_BAD
+
+
+# --- mini-sector boxes -------------------------------------------
+
+def test_slice_status_thresholds():
+    assert slice_status(None) is None
+    assert slice_status(-1) == STATUS_BEST
+    assert slice_status(0) == STATUS_GOOD
+    assert slice_status(BOX_GOOD_MS) == STATUS_GOOD
+    assert slice_status(BOX_GOOD_MS + 1) == STATUS_WARN
+    assert slice_status(BOX_WARN_MS) == STATUS_WARN
+    assert slice_status(BOX_WARN_MS + 1) == STATUS_BAD
+
+
+def drive_lap(tracker, times):
+    feed(tracker, lap_frames(times))
+
+
+def test_boxes_are_empty_before_any_reference():
+    tracker = MiniSectorTracker()
+    drive_lap(tracker, EVEN)
+    assert tracker.slice_statuses == [None] * N
+
+
+def test_boxes_fill_in_as_the_lap_progresses_and_grade_each_slice():
+    tracker = with_reference()
+    times = list(EVEN)
+    times[2] = 4400    # 100 ms quicker: purple
+    times[3] = 4530    # +30 ms: green
+    times[4] = 4650    # +150 ms: yellow
+    times[5] = 4900    # +400 ms: red
+    feed(tracker, list(lap_frames(times))[:7 * STEPS])
+    statuses = tracker.slice_statuses
+    assert statuses[:2] == [STATUS_GOOD] * 2
+    assert statuses[2:6] == [STATUS_BEST, STATUS_GOOD, STATUS_WARN, STATUS_BAD]
+    assert statuses[7:] == [None] * (N - 7)     # not driven yet
+
+
+def test_boxes_use_the_frozen_reference_mid_lap():
+    tracker = with_reference()
+    times = list(EVEN)
+    times[1] = 4000
+    times[2] = 4000
+    feed(tracker, list(lap_frames(times))[:4 * STEPS])
+    # Slice 2 is again quicker than the reference: still purple, not
+    # compared against slice 1's new (pending) best or its own.
+    assert tracker.slice_statuses[1:3] == [STATUS_BEST, STATUS_BEST]
+
+
+def test_finished_lap_boxes_stay_until_the_next_laps_first_slice_completes():
+    tracker = with_reference()
+    times = list(EVEN)
+    times[6] = 5000
+    drive_lap(tracker, times)
+    tracker.update(False, 0.0, 0)           # the line
+    held = tracker.slice_statuses
+    assert held[6] == STATUS_BAD and held.count(None) == 0
+    # Part way through the first slice: still the finished lap.
+    new_lap = list(lap_frames(EVEN))
+    feed(tracker, new_lap[1:3])
+    assert tracker.slice_statuses == held
+    # First slice done: boxes switch to the new lap.
+    feed(tracker, new_lap[3:STEPS + 2])
+    fresh = tracker.slice_statuses
+    assert fresh[0] is not None and fresh[1:] == [None] * (N - 1)
+
+
+def test_pit_lap_leaves_untouched_slices_empty():
+    tracker = with_reference()
+    feed(tracker, lap_frames(EVEN, pit_from=10))
+    assert tracker.slice_statuses[:9].count(None) == 0
+    assert tracker.slice_statuses[10:] == [None] * (N - 10)
+
+
+def test_restart_clears_the_boxes():
+    tracker = with_reference()
+    drive_lap(tracker, EVEN)
+    assert any(tracker.slice_statuses)
+    tracker.update(False, 0.0, 0, restarted=True)
+    assert tracker.slice_statuses == [None] * N
+
+
+def test_time_boxes_reads_the_tracker():
+    state = stream_state()
+    assert time_boxes(state) == state.sectors.slice_statuses
+    assert len(time_boxes(state)) == N
