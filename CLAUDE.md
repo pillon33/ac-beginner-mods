@@ -102,7 +102,7 @@ windows) → each window's readout in `pitwall_core/windows.py` returns
 ```
 apps/python/pitwall/pitwall.py       AC entry point (acMain/acUpdate/acShutdown): read frame, update state, render windows
 apps/python/pitwall/pitwall_hud/     the only ac-calling code: ac_frame.py (game -> Frame), stat_window.py (WindowSpec -> AC labels)
-pitwall_core/                        pure shared logic: layout (generated), memory, laps, race, fuel, state, display, windows
+pitwall_core/                        pure shared logic: layout (generated), memory, laps, race, fuel, sectors, state, display, windows
 content/gui/icons/                   app-bar icons (<window>_ON/_OFF.png, placeholders); mirrors the AC install path, deploy copies them
 telemetry/shared_memory.py           ctypes structs (layout source of truth) + BLOCKS + ACTelemetry, Windows-only
 telemetry/hello_telemetry.py         polls ACTelemetry and prints live values; imports pitwall_core
