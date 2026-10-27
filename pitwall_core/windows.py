@@ -89,13 +89,11 @@ def time_readout(state):
     theoretical: sum of the best sector times this session (needs a
     counted time in every sector, see sectors.py), '--' until then.
 
-    delta: the current lap's sector times so far minus the best times
-    of those same sectors, i.e. how far off the theoretical pace the
-    lap has been at its last sector split. Updates at each split, holds
-    across the line (after a lap it is that lap's full gap) and is
-    '--' until a theoretical best exists or when the lap has an
-    uncounted sector (pit, joined mid-lap). It is never negative:
-    the best sectors include the lap's own.
+    delta: live gap to the theoretical best lap at the car's current
+    track position, updated every frame: negative when the lap is
+    quicker. Restarts at the line and is '--' until a theoretical best
+    exists or when the lap has an uncounted sector (pit, joined
+    mid-lap). See sectors.py.
     """
     sectors = state.sectors
     theoretical = sectors.theoretical_best_ms

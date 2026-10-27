@@ -63,18 +63,109 @@ def test_theoretical_best_combines_best_sectors_from_different_laps():
     assert tracker.theoretical_best_ms == 89000
 
 
-def test_delta_is_gap_to_best_sectors_so_far_and_holds_across_the_line():
+def test_split_delta_is_gap_to_best_sectors_so_far_and_restarts_at_the_line():
     tracker = tracker_in_sector_0_watched()
     run_lap(tracker, [30000, 31000, 29000], laps=2)
-    assert tracker.delta_ms == 0          # lap that set every best
+    assert tracker.delta_ms == 0          # line crossed: new lap starts level
     sample(tracker, 1, 30400, laps=3)
     assert tracker.delta_ms == 400
     sample(tracker, 2, 31100, laps=3)
     assert tracker.delta_ms == 400 + 100
     sample(tracker, 0, 29200, laps=4)
-    assert tracker.delta_ms == 700        # full lap gap, held into the next lap
-    sample(tracker, 0, None, laps=4)
-    assert tracker.delta_ms == 700
+    assert tracker.delta_ms == 0
+
+
+def test_lap_through_a_sector_with_no_best_yet_has_no_delta():
+    tracker = tracker_in_sector_0_watched()
+    sample(tracker, 1, 30000, laps=2)     # first ever sector 0 time
+    assert tracker.delta_ms is None
+
+
+def test_faster_sector_gives_a_negative_delta():
+    tracker = tracker_in_sector_0_watched()
+    run_lap(tracker, [30000, 31000, 29000], laps=2)
+    sample(tracker, 1, 29500, laps=3)
+    assert tracker.delta_ms == -500       # against the old best, not itself
+    assert tracker.best_ms[0] == 29500
+    sample(tracker, 2, 31200, laps=3)
+    assert tracker.delta_ms == -300
+
+
+SECTOR_STEPS = 10
+
+
+def at(sector, step):
+    """Lap progress `step` / SECTOR_STEPS of the way through `sector`
+    on a 3-sector track with equal-length sectors."""
+    return (sector + step / float(SECTOR_STEPS)) / 3
+
+
+def live(tracker, sector, progress, lap_ms, laps, last_ms=None):
+    tracker.update(sector, last_ms, False, laps, 3, False, progress, lap_ms)
+
+
+def drive_live_lap(tracker, times, laps):
+    """Drive a lap frame by frame at an even pace through each sector,
+    ending just past the line."""
+    start = 0
+    for sector, ms in enumerate(times):
+        for step in range(1, SECTOR_STEPS):
+            live(tracker, sector, at(sector, step), start + ms * step / SECTOR_STEPS, laps)
+        start += ms
+        nxt = (sector + 1) % 3
+        if nxt == 0:
+            live(tracker, 0, 0.0, 0, laps + 1, ms)
+        else:
+            live(tracker, nxt, at(nxt, 0), start, laps, ms)
+
+
+def tracker_with_reference_lap():
+    """Watched a full 30/30/30 s lap with progress, now just past the
+    line of lap 3."""
+    tracker = tracker_in_sector_0_watched()
+    live(tracker, 0, 0.0, 0, 2)
+    drive_live_lap(tracker, [30000, 30000, 30000], laps=2)
+    return tracker
+
+
+def test_live_delta_updates_mid_sector():
+    tracker = tracker_with_reference_lap()
+    live(tracker, 0, at(0, 5), 16000, 3)  # reference was here at 15 s
+    assert abs(tracker.delta_ms - 1000) < 1
+    live(tracker, 0, at(0, 8), 25000, 3)  # reference: 24 s
+    assert abs(tracker.delta_ms - 1000) < 1
+
+
+def test_live_delta_goes_negative_and_carries_split_gaps():
+    tracker = tracker_with_reference_lap()
+    live(tracker, 1, at(1, 0), 31000, 3, 31000)
+    assert tracker.delta_ms == 1000
+    live(tracker, 1, at(1, 5), 31000 + 13000, 3)  # 2 s quicker than reference
+    assert abs(tracker.delta_ms - (1000 - 2000)) < 1
+
+
+def test_live_delta_ignores_a_stale_clock_and_position_at_the_line():
+    tracker = tracker_with_reference_lap()
+    live(tracker, 1, at(1, 0), 30000, 3, 30000)
+    live(tracker, 2, at(2, 0), 60000, 3, 30000)
+    live(tracker, 2, at(2, 9), 87000, 3)
+    assert abs(tracker.delta_ms) < 1
+    # Position wraps a frame before the sector index changes.
+    live(tracker, 2, 0.001, 50, 3)
+    assert abs(tracker.delta_ms) < 1
+    # Index changes a frame before the lap clock resets and the
+    # position wraps.
+    live(tracker, 0, 0.999, 90000, 4, 30000)
+    assert tracker.delta_ms == 0
+    live(tracker, 0, 0.001, 16, 4)
+    live(tracker, 0, at(0, 5), 15500, 4)
+    assert abs(tracker.delta_ms - 500) < 1
+
+
+def test_pit_lane_blanks_the_live_delta_straight_away():
+    tracker = tracker_with_reference_lap()
+    tracker.update(0, None, True, 3, 3, False, at(0, 2), 6000)
+    assert tracker.delta_ms is None
 
 
 def test_pit_lane_sector_is_not_counted_and_blanks_the_lap_delta():
@@ -92,8 +183,8 @@ def test_pit_lane_sector_is_not_counted_and_blanks_the_lap_delta():
     assert tracker.delta_ms is None
     sample(tracker, 0, 28000, laps=4)
     assert tracker.best_ms[2] == 28000
-    assert tracker.delta_ms is None
-    # Next lap is clean again.
+    # Next lap is clean again, from the line.
+    assert tracker.delta_ms == 0
     sample(tracker, 1, 30000, laps=4)
     assert tracker.delta_ms == 0
 
