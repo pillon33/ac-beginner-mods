@@ -1,9 +1,10 @@
 """Guard against syntax that crashes in AC's embedded Python 3.3.
 
-Modern Python happily runs the in-game apps' pure modules in tests,
-so a stray f-string would pass every other test and only fail when
-AC loads the app. This walks the AST of every file under apps/python
-and rejects the 3.6+ syntax that's easiest to slip in by habit.
+Modern Python happily runs the in-game code in tests, so a stray
+f-string would pass every other test and only fail when AC loads the
+app. This walks the AST of every file AC will load (apps/python and
+the shared pitwall_core package) and rejects the 3.6+ syntax that's
+easiest to slip in by habit.
 """
 
 import ast
@@ -12,7 +13,8 @@ import os
 
 import pytest
 
-APPS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "apps", "python")
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+IN_GAME_DIRS = ("apps/python", "pitwall_core")
 
 FORBIDDEN_NODES = {
     "JoinedStr": "f-string (3.6+)",
@@ -22,10 +24,14 @@ FORBIDDEN_NODES = {
     "Await": "await (3.5+)",
 }
 
-APP_SOURCES = sorted(glob.glob(os.path.join(APPS_DIR, "**", "*.py"), recursive=True))
+IN_GAME_SOURCES = sorted(
+    path
+    for folder in IN_GAME_DIRS
+    for path in glob.glob(os.path.join(REPO_ROOT, folder, "**", "*.py"), recursive=True)
+)
 
 
-@pytest.mark.parametrize("path", APP_SOURCES, ids=lambda p: os.path.relpath(p, APPS_DIR))
+@pytest.mark.parametrize("path", IN_GAME_SOURCES, ids=lambda p: os.path.relpath(p, REPO_ROOT))
 def test_app_source_is_python33_compatible(path):
     with open(path, encoding="utf-8") as source:
         tree = ast.parse(source.read(), filename=path)

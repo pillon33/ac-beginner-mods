@@ -4,7 +4,7 @@ external Python process (not from inside the game).
 
 WHY THIS EXISTS
 -----------------
-The in-game apps/python apps (see apps/python/hello_hud) run on AC's
+The in-game app (apps/python/pitwall) runs on AC's
 bundled Python 3.3 with no pip and no outside network access. That's
 fine for a HUD widget, but it's the wrong place to call an LLM API,
 run text-to-speech, or use any modern library — which is exactly what
@@ -27,20 +27,24 @@ field type, and array lengths all have to match Kunos' C struct
 EXACTLY, or every field after the first mistake will silently read
 garbage (not an error — just wrong numbers, NaNs, or garbled text).
 
-The field layout below covers the common, stable, well-published
-subset of each struct (speed/gear/rpm from physics; lap/session state
-from graphics) that's been consistent across the AC modding community
-for years. Kunos ships the authoritative reference with the game
-itself:
+The field layout below covers a stable, widely published prefix of
+each struct. It was transcribed from sim_info.py in
+https://github.com/albertowd/live-telemetry (AC SDK 1.14.3); the Kunos
+SDK reference folder (sdk\\dev\\shared memory) isn't shipped with every
+install. Cross-check names, types and order against such a reference
+before adding fields, then check the values look plausible live
+(speed 0-350ish, gear -1..8). Noise means a mismatch.
 
-    <AC install dir>\\sdk\\dev\\shared memory\\
+SINGLE SOURCE OF TRUTH
+-----------------------
+These structs also define the layout the in-game app reads. The
+in-game Python has no ctypes, so scripts/gen_layout.py turns them
+into plain byte offsets in pitwall_core/layout.py. After changing a
+struct, run:
 
-Before you extend this file with more fields (tyre temps, damage,
-etc.), open that reference and cross-check names, types and order.
-A good sanity check once you're reading live data: the numbers should
-look plausible (speed 0-350ish, gear -1..8) — if they look like noise,
-you have a struct mismatch, and `ctypes.sizeof(SPageFilePhysics)`
-should match the size AC's docs say the struct is.
+    python scripts/gen_layout.py
+
+tests/test_layout.py fails until the generated file matches.
 """
 
 import ctypes
@@ -145,6 +149,13 @@ class SPageFileStatic(ctypes.Structure):
     ]
 
 
+# (name, shared memory tag, struct) for each block AC publishes.
+BLOCKS = (
+    ("physics", "Local\\acpmf_physics", SPageFilePhysics),
+    ("graphics", "Local\\acpmf_graphics", SPageFileGraphic),
+    ("static", "Local\\acpmf_static", SPageFileStatic),
+)
+
 AC_STATUS = {0: "OFF", 1: "REPLAY", 2: "LIVE", 3: "PAUSE"}
 AC_SESSION_TYPE = {
     -1: "UNKNOWN", 0: "PRACTICE", 1: "QUALIFY", 2: "RACE",
@@ -163,31 +174,22 @@ class ACTelemetry:
     """
 
     def __init__(self):
-        self._physics_mm = mmap.mmap(
-            -1, ctypes.sizeof(SPageFilePhysics),
-            tagname="Local\\acpmf_physics", access=mmap.ACCESS_READ,
-        )
-        self._graphics_mm = mmap.mmap(
-            -1, ctypes.sizeof(SPageFileGraphic),
-            tagname="Local\\acpmf_graphics", access=mmap.ACCESS_READ,
-        )
-        self._static_mm = mmap.mmap(
-            -1, ctypes.sizeof(SPageFileStatic),
-            tagname="Local\\acpmf_static", access=mmap.ACCESS_READ,
-        )
+        self._maps = {
+            name: mmap.mmap(-1, ctypes.sizeof(struct), tagname=tag, access=mmap.ACCESS_READ)
+            for name, tag, struct in BLOCKS
+        }
 
     def read(self):
-        physics = SPageFilePhysics.from_buffer_copy(self._physics_mm)
-        graphics = SPageFileGraphic.from_buffer_copy(self._graphics_mm)
+        physics = SPageFilePhysics.from_buffer_copy(self._maps["physics"])
+        graphics = SPageFileGraphic.from_buffer_copy(self._maps["graphics"])
         return physics, graphics
 
     def read_static(self):
-        return SPageFileStatic.from_buffer_copy(self._static_mm)
+        return SPageFileStatic.from_buffer_copy(self._maps["static"])
 
     def close(self):
-        self._physics_mm.close()
-        self._graphics_mm.close()
-        self._static_mm.close()
+        for shared_map in self._maps.values():
+            shared_map.close()
 
     def __enter__(self):
         return self
