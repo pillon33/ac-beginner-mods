@@ -86,12 +86,15 @@ TIME_ROWS = [
 def time_readout(state):
     """Lap timer and pace against the theoretical best lap.
 
-    theoretical: sum of the best sector times this session (needs a
-    counted time in every sector, see sectors.py), '--' until then.
+    theoretical: sum of the best time of every mini-sector (equal
+    slices of the lap by track position) this session, '--' until
+    every slice has a clean time. It changes only at the start/finish
+    line, never mid-lap.
 
     delta: live, every frame: this lap's time so far minus the time the
-    reference lap (the best segment of every sector joined up, ending
-    at the theoretical best) took to reach the same track position.
+    reference lap (the best segment of every mini-sector joined up,
+    ending at the theoretical best shown above) took to reach the same
+    track position. The reference is frozen for the whole lap.
     Negative (good) means ahead of the theoretical pace, positive
     behind. '--' until a full reference exists, after the car has been
     in the pit lane this lap, or when the position goes backwards or

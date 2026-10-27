@@ -11,7 +11,7 @@ laps count.
 from pitwall_core.fuel import FuelTracker
 from pitwall_core.laps import LapTracker
 from pitwall_core.race import laps_to_flag
-from pitwall_core.sectors import SectorTracker
+from pitwall_core.sectors import MiniSectorTracker
 
 
 class Frame(object):
@@ -19,8 +19,7 @@ class Frame(object):
     only place that touches `ac` or shared memory."""
 
     def __init__(self, fuel, completed_laps, in_pit_lane, lap_progress=None,
-                 lap_time_ms=None, speed_kmh=None, gear=None, session=None,
-                 current_sector=None, last_sector_ms=None, sector_count=None):
+                 lap_time_ms=None, speed_kmh=None, gear=None, session=None):
         self.fuel = fuel
         self.completed_laps = completed_laps
         self.in_pit_lane = in_pit_lane
@@ -29,9 +28,6 @@ class Frame(object):
         self.speed_kmh = speed_kmh
         self.gear = gear
         self.session = session
-        self.current_sector = current_sector
-        self.last_sector_ms = last_sector_ms
-        self.sector_count = sector_count
 
 
 class RaceState(object):
@@ -40,7 +36,7 @@ class RaceState(object):
     def __init__(self):
         self.laps = LapTracker()
         self.fuel = FuelTracker()
-        self.sectors = SectorTracker()
+        self.sectors = MiniSectorTracker()
         self.frame = None
 
     def update(self, frame):
@@ -48,9 +44,8 @@ class RaceState(object):
         lap_update = self.laps.update(frame.completed_laps, frame.in_pit_lane,
                                       frame.lap_progress, frame.lap_time_ms)
         self.fuel.update(frame.fuel, lap_update, self.laps.lap_progress)
-        self.sectors.update(frame.current_sector, frame.last_sector_ms, frame.in_pit_lane,
-                            frame.completed_laps, frame.sector_count, lap_update.restarted,
-                            self.laps.lap_progress, frame.lap_time_ms)
+        self.sectors.update(frame.in_pit_lane, self.laps.lap_progress, frame.lap_time_ms,
+                            lap_update.restarted)
 
     @property
     def laps_to_flag(self):

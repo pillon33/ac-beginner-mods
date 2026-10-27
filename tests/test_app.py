@@ -91,9 +91,8 @@ class FakeBlock(object):
 class FakeMemory(object):
     def __init__(self):
         self.physics = FakeBlock({"fuel": 60.0})
-        self.graphics = FakeBlock({"session": 2, "numberOfLaps": 20, "sessionTimeLeft": 0.0,
-                                      "currentSectorIndex": 1, "lastSectorTime": 31000})
-        self.static = FakeBlock({"isTimedRace": 0, "hasExtraLap": 0, "sectorCount": 3})
+        self.graphics = FakeBlock({"session": 2, "numberOfLaps": 20, "sessionTimeLeft": 0.0})
+        self.static = FakeBlock({"isTimedRace": 0, "hasExtraLap": 0})
 
     def close(self):
         pass

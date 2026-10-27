@@ -1,45 +1,48 @@
 """
-sectors.py — best sector times this session, the theoretical best lap
-built from them, and a live delta against that lap.
+sectors.py — best mini-sector times this session, the theoretical best
+lap built from them, and a live delta against that lap.
 
-Data: AC's shared memory gives the index of the sector the car is in
-(`currentSectorIndex`) and the time of the sector it last completed
-(`lastSectorTime`, ms, the sector's own time, not a running split).
-When the index changes, the sector we were in has just finished and
-`last_sector_ms` is its time. The `ac` API gives the lap time so far
-and the normalized track position (0..1 round the lap).
+MINI-SECTORS
+-------------
+The lap is cut into MINI_SECTORS equal slices of normalized track
+position (lap_progress boundaries, not AC's three sectors). A mini
+sector's time is measured from the lap-time samples around its two
+boundary crossings, interpolated between frames, so it doesn't depend
+on any AC sector field. The only inputs are the pit-lane flag, the
+track position and the lap time so far.
 
-A completed sector only counts as a best-sector candidate when we
-trust the number:
+A mini-sector only counts when it was watched from its start to its
+end, the car was not in the pit lane at any point during it, and the
+position only moved forward through it. We also keep a trace of it,
+(position, time since the slice began) samples, one every SAMPLE_STEP
+of the lap.
 
-  * we saw it from its start (not joined mid-sector),
-  * the car was not in the pit lane at any point during it,
-  * it was not the standing start from the grid (sector 0 of lap 0),
-  * the index moved to the expected next sector (no skipped sectors),
-  * the car's position only moved forward through it,
-  * we recorded a usable trace of it (below).
+REFERENCE LAP (frozen for a whole lap)
+---------------------------------------
+Counted mini-sectors of the lap in progress are held as pending. At the
+start/finish crossing, if the lap was clean (no pit lane, no position
+jumps or reversals) they are merged into the session bests and the
+reference lap is rebuilt from the best segment of every mini-sector
+joined end to end, so it ends exactly at the theoretical best. A lap
+that is not clean contributes nothing. The reference only ever changes
+at the line, so the delta and the theoretical best shown during a lap
+all refer to the same reference.
 
-TRACE AND REFERENCE LAP
-------------------------
-While a sector is driven, a trace of (position, time since the sector
-started) samples is kept, one every SAMPLE_STEP of the track and at
-most MAX_SAMPLES per sector. When a sector sets a new best its trace
-replaces that sector's reference segment. The reference lap is the
-best segments joined end to end, each offset by the best times of the
-sectors before it, so it ends exactly at the theoretical best lap.
-
-The live delta is the lap time so far minus the reference time at the
-current position (linear interpolation): negative when ahead of the
-theoretical pace, positive when behind. It is recomputed on every
-update and is None when there is no full reference yet, after the car
-has been in the pit lane this lap, or when the position goes
-backwards or jumps (until the next start/finish crossing).
+LIVE DELTA
+-----------
+The lap time so far minus the reference time at the current position
+(linear interpolation), recomputed on every update: negative when
+ahead of the theoretical pace, positive when behind. It is None when
+there is no full reference yet, once the car has been in the pit lane
+this lap, or when the position goes backwards or jumps; it comes back
+at the next start/finish crossing.
 """
 
 from bisect import bisect_left
 
+MINI_SECTORS = 20       # equal slices of the lap by normalized position
 SAMPLE_STEP = 0.005     # fraction of the lap between trace samples
-MAX_SAMPLES = 400       # per sector: bounds memory
+MAX_SAMPLES = 400       # per mini-sector: bounds memory
 MAX_FORWARD_JUMP = 0.1  # more than this in one frame is a teleport
 BACKWARD_TOLERANCE = 0.002
 WRAP_FROM = 0.9         # position falling from above this to below WRAP_TO
@@ -63,15 +66,15 @@ def interpolate(points, x):
     return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
 
 
-def build_reference(traces, best_ms, sector_count):
-    """Join the best segment of every sector into one lap of
-    (position, time) points, or None when a sector has no segment.
+def build_reference(traces, best_ms, count):
+    """Join the best segment of every mini-sector into one lap of
+    (position, time) points, or None when a slice has no segment.
     Positions and times never go backwards."""
-    if not sector_count or any(index not in traces for index in range(sector_count)):
+    if not count or any(index not in traces for index in range(count)):
         return None
     points = []
     offset = 0
-    for index in range(sector_count):
+    for index in range(count):
         for position, elapsed in traces[index]:
             if points:
                 position = max(position, points[-1][0])
@@ -83,162 +86,164 @@ def build_reference(traces, best_ms, sector_count):
     return points
 
 
-class SectorTracker(object):
+class MiniSectorTracker(object):
 
-    def __init__(self):
+    def __init__(self, count=MINI_SECTORS):
+        self.count = count
         self.reset()
 
     def reset(self):
         """Forget everything, e.g. when a new session starts."""
-        self.best_ms = {}            # sector index -> best time
-        self.best_trace = {}         # sector index -> [(position, ms into sector)]
-        self.sector_count = None
+        self.best_ms = {}            # mini-sector -> best time this session
+        self.best_trace = {}         # mini-sector -> [(position, ms into slice)]
         self.delta_ms = None
-        self._reference = None
-        self._sector = None
-        self._watched = False        # saw the current sector from its start
-        self._sector_tainted = False
-        self._on_grid = False
-        self._lap_splits = []
-        self._lap_tainted = False
-        self._trace = []
-        self._trace_base = None      # lap time at the sector's start
-        self._last_pos = None
+        self._reference = None       # frozen until the next start/finish crossing
+        self._theoretical_ms = None
+        self._pending = {}           # this lap's counted mini-sectors
+        self._lap_ok = True          # clean so far: may feed the reference
         self._delta_ok = True
+        self._prev = None            # (position, lap time) of the last frame
+        self._rate = None            # ms per unit of position, last frame
+        self._mini = None
+        self._start = None           # (position, lap time) the slice began at
+        self._trace = []
+        self._watched = False
+        self._tainted = False
 
-    def update(self, current_sector, last_sector_ms, in_pit_lane, completed_laps,
-               sector_count=None, restarted=False, lap_progress=None, lap_time_ms=None):
+    def update(self, in_pit_lane, lap_progress, lap_time_ms, restarted=False):
         if restarted:
             self.reset()
-        if sector_count:
-            self.sector_count = sector_count
         self.delta_ms = None
-        if current_sector is None:
+        if lap_progress is None or lap_time_ms is None:
             return
 
         if in_pit_lane:
-            self._sector_tainted = True
-            self._delta_ok = False
-        if self._sector is None:
-            self._begin(current_sector, completed_laps, watched=False)
-        elif current_sector != self._sector:
-            self._complete(current_sector, last_sector_ms)
-            self._begin(current_sector, completed_laps, watched=True)
+            self._pit()
+        current = (lap_progress, lap_time_ms)
+        if self._prev is None:
+            self._enter(lap_progress)
+            self._prev = current
+        else:
+            self._advance(self._prev, current)
         if in_pit_lane:
-            self._sector_tainted = True
-            self._delta_ok = False
-
-        self._track(lap_progress, lap_time_ms)
+            self._pit()      # also spoils a slice (and lap) just entered
+        self._set_delta(lap_progress, lap_time_ms)
 
     @property
     def theoretical_best_ms(self):
-        """Sum of the best time of every sector, or None until each
-        sector has a counted time."""
-        if not self.sector_count:
-            return None
-        if any(index not in self.best_ms for index in range(self.sector_count)):
-            return None
-        return sum(self.best_ms[index] for index in range(self.sector_count))
+        """Sum of the best time of every mini-sector in the reference
+        lap, or None until there is one. Changes only at the line."""
+        return self._theoretical_ms
 
-    def _begin(self, sector, completed_laps, watched):
-        self._sector = sector
-        self._watched = watched
-        self._sector_tainted = False
-        self._on_grid = sector == 0 and completed_laps == 0
+    # -- per frame -------------------------------------------------
+
+    def _pit(self):
+        self._lap_ok = False
+        self._delta_ok = False
+        self._tainted = True
+
+    def _enter(self, position):
+        """First sample, or after a jump: not watched from a boundary,
+        so this slice can't count."""
+        self._mini = min(int(position * self.count), self.count - 1)
+        self._start = None
         self._trace = []
-        if sector == 0:
-            self._trace_base = 0
-            self._delta_ok = True
-        elif not self._lap_tainted and len(self._lap_splits) == sector:
-            self._trace_base = sum(self._lap_splits)
+        self._watched = False
+        self._tainted = True
+        self._prev = None
+
+    def _advance(self, prev, current):
+        position, lap_time = current
+        prev_position = prev[0]
+        if prev_position > WRAP_FROM and position < WRAP_TO:
+            self._cross_line(prev, current)
+        elif position < prev_position - BACKWARD_TOLERANCE or \
+                position - prev_position > MAX_FORWARD_JUMP:
+            self._lap_ok = False
+            self._delta_ok = False
+            self._enter(position)
+        elif position > prev_position:
+            self._segment(prev, current)
         else:
-            self._trace_base = None   # taken from the first sample
+            return           # standing still (or sub-tolerance jitter)
+        self._prev = current
 
-    def _is_next(self, old, new):
-        if self.sector_count:
-            return new == (old + 1) % self.sector_count
-        return new == old + 1 or (new == 0 and old > 0)
+    def _cross_line(self, prev, current):
+        """Position wrapped: finish the old lap by extrapolating at the
+        speed of the last frames, then start the new lap the same way
+        from the line."""
+        position, lap_time = current
+        rate = self._rate
+        if not rate or rate <= 0:
+            self._lap_ok = False
+            self._enter(position)
+            return
+        line_old = prev[1] + rate * (1.0 - prev[0])
+        self._segment(prev, (1.0, line_old))
+        self._end_lap()
+        line_new = lap_time - rate * position
+        self._open(0, 0.0, line_new, watched=True)
+        self._segment((0.0, line_new), current)
 
-    def _implausible(self, position):
-        """Position that can't belong to this sector: the last frames
-        before the index and the position wrap are out of step."""
-        if self._sector == 0 and position > 0.5:
-            return True
-        return bool(self.sector_count) and self._sector == self.sector_count - 1 and position < 0.5
+    def _segment(self, prev, current):
+        """Advance from prev to current within one lap: close every
+        mini-sector whose end boundary lies in between."""
+        (p0, t0), (p1, t1) = prev, current
+        if p1 > p0:
+            self._rate = (t1 - t0) / (p1 - p0)
+        while self._mini < self.count:
+            boundary = (self._mini + 1) / float(self.count)
+            if p1 < boundary:
+                break
+            time = t0 + (t1 - t0) * (boundary - p0) / (p1 - p0) if p1 > p0 else t1
+            self._close(boundary, time)
+            if self._mini + 1 >= self.count:
+                self._mini = self.count     # past the line; caller restarts
+                return
+            self._open(self._mini + 1, boundary, time, watched=True)
+        self._sample(p1, t1)
 
-    def _track(self, position, lap_time_ms):
-        """Per-frame work: advance the trace, compute the live delta."""
-        if position is None or lap_time_ms is None:
-            return
-        previous = self._last_pos
-        self._last_pos = position
-        if previous is not None:
-            if previous > WRAP_FROM and position < WRAP_TO:
-                self._delta_ok = True        # crossed the line
-                return self._set_delta(position, lap_time_ms)
-            if position < previous - BACKWARD_TOLERANCE or position - previous > MAX_FORWARD_JUMP:
-                self._delta_ok = False
-                self._sector_tainted = True
-        if self._implausible(position):
-            return
-        self._record(position, lap_time_ms)
-        self._set_delta(position, lap_time_ms)
+    def _open(self, index, position, time, watched):
+        self._mini = index
+        self._start = (position, time)
+        self._trace = [(position, 0)] if watched else []
+        self._watched = watched
+        self._tainted = False
 
-    def _record(self, position, lap_time_ms):
-        if not self._watched or self._sector_tainted:
+    def _sample(self, position, lap_time):
+        if not self._watched or self._tainted or self._start is None or self._mini >= self.count:
             return
-        if self._trace_base is None:
-            self._trace_base = lap_time_ms
-        elapsed = lap_time_ms - self._trace_base
-        if elapsed < 0 or len(self._trace) >= MAX_SAMPLES:
-            self._sector_tainted = True
+        if len(self._trace) >= MAX_SAMPLES:
             return
-        if not self._trace or position - self._trace[-1][0] >= SAMPLE_STEP:
-            self._trace.append((position, elapsed))
+        if position - self._trace[-1][0] >= SAMPLE_STEP:
+            self._trace.append((position, lap_time - self._start[1]))
+
+    def _close(self, position, time):
+        if not self._watched or self._tainted or self._start is None:
+            return
+        elapsed = time - self._start[1]
+        if elapsed <= 0:
+            return
+        trace = [(p, t) for p, t in self._trace if t < elapsed]
+        trace.append((position, elapsed))
+        self._pending[self._mini] = (elapsed, trace)
+
+    def _end_lap(self):
+        """Start/finish crossing: promote a clean lap's mini-sectors
+        into the bests and refresh the reference."""
+        if self._lap_ok:
+            for index, (ms, trace) in self._pending.items():
+                if index not in self.best_ms or ms < self.best_ms[index]:
+                    self.best_ms[index] = ms
+                    self.best_trace[index] = trace
+            self._reference = build_reference(self.best_trace, self.best_ms, self.count)
+            if self._reference is not None:
+                self._theoretical_ms = self._reference[-1][1]
+        self._pending = {}
+        self._lap_ok = True
+        self._delta_ok = True
 
     def _set_delta(self, position, lap_time_ms):
-        if not self._delta_ok or self._reference is None or self._implausible(position):
+        if not self._delta_ok or self._reference is None:
             return
         self.delta_ms = lap_time_ms - interpolate(self._reference, position)
-
-    def _finish_trace(self, old, sector_ms):
-        """The closed sector's trace as a reference segment, or None."""
-        if not self._trace:
-            return None
-        if old == 0 and self._trace[0][0] > 0:
-            trace = [(0.0, 0)] + self._trace
-        else:
-            trace = list(self._trace)
-        if self.sector_count and old == self.sector_count - 1:
-            end = 1.0
-        else:
-            end = max(trace[-1][0], self._last_pos or 0.0)
-        trace = [(p, t) for p, t in trace if t < sector_ms]
-        if not trace:
-            return None
-        trace.append((end, sector_ms))
-        return trace
-
-    def _complete(self, new, sector_ms):
-        old = self._sector
-        counted = (self._is_next(old, new) and self._watched and not self._sector_tainted
-                   and not self._on_grid and sector_ms is not None and sector_ms > 0)
-        trace = self._finish_trace(old, sector_ms) if counted else None
-        counted = trace is not None
-        if counted:
-            if old not in self.best_ms or sector_ms < self.best_ms[old]:
-                self.best_ms[old] = sector_ms
-                self.best_trace[old] = trace
-                self._reference = build_reference(self.best_trace, self.best_ms,
-                                                  self.sector_count)
-            if not self._lap_tainted and len(self._lap_splits) == old:
-                self._lap_splits.append(sector_ms)
-            else:
-                self._lap_tainted = True
-        else:
-            self._lap_tainted = True
-
-        if new == 0:
-            # Crossed the line: next lap's splits start afresh.
-            self._lap_splits = []
-            self._lap_tainted = False
