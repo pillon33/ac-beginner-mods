@@ -91,3 +91,33 @@ def format_gear(gear):
     if gear == 1:
         return "N"
     return str(gear - 1)
+
+
+def format_lap_time(ms):
+    """'1:23.456' (minutes only when there are some: '58.123')."""
+    if ms is None or ms < 0:
+        return NO_VALUE
+    minutes, rest = divmod(int(round(ms)), 60000)
+    seconds = rest / 1000.0
+    if minutes:
+        return "{}:{:06.3f}".format(minutes, seconds)
+    return "{:.3f}".format(seconds)
+
+
+def format_delta(ms):
+    """'+0.234' / '-1.050' seconds."""
+    if ms is None:
+        return NO_VALUE
+    return "{:+.3f}".format(ms / 1000.0)
+
+
+def delta_status(ms):
+    """Within 0.05 s of the theoretical best is good, under 0.5 s is
+    a warning, beyond that bad."""
+    if ms is None:
+        return None
+    if ms <= 50:
+        return STATUS_GOOD
+    if ms <= 500:
+        return STATUS_WARN
+    return STATUS_BAD

@@ -9,8 +9,8 @@ To add a window: write a readout, add a WindowSpec to WINDOWS.
 """
 
 from pitwall_core.display import (
-    format_average, format_current_lap, format_fuel_lap, format_gear, format_laps,
-    format_litres, format_speed, format_surplus, format_target,
+    delta_status, format_average, format_current_lap, format_delta, format_fuel_lap, format_gear,
+    format_lap_time, format_laps, format_litres, format_speed, format_surplus, format_target,
 )
 from pitwall_core.fuel import (
     lap_budget_delta, lap_budget_status, laps_of_fuel, surplus_status, surplus_to_flag,
@@ -76,7 +76,39 @@ def car_readout(state):
     }
 
 
+TIME_ROWS = [
+    ("lap", "Lap"),
+    ("theoretical", "Theoretical"),
+    ("delta", "Delta"),
+]
+
+
+def time_readout(state):
+    """Lap timer and pace against the theoretical best lap.
+
+    theoretical: sum of the best sector times this session (needs a
+    counted time in every sector, see sectors.py), '--' until then.
+
+    delta: the current lap's sector times so far minus the best times
+    of those same sectors, i.e. how far off the theoretical pace the
+    lap has been at its last sector split. Updates at each split, holds
+    across the line (after a lap it is that lap's full gap) and is
+    '--' until a theoretical best exists or when the lap has an
+    uncounted sector (pit, joined mid-lap). It is never negative:
+    the best sectors include the lap's own.
+    """
+    sectors = state.sectors
+    theoretical = sectors.theoretical_best_ms
+    delta = sectors.delta_ms if theoretical is not None else None
+    return {
+        "lap": (format_lap_time(state.frame.lap_time_ms), None),
+        "theoretical": (format_lap_time(theoretical), None),
+        "delta": (format_delta(delta), delta_status(delta)),
+    }
+
+
 WINDOWS = (
     WindowSpec("pitwall_fuel", "Fuel", FUEL_ROWS, fuel_readout),
+    WindowSpec("pitwall_time", "Time", TIME_ROWS, time_readout, width=230),
     WindowSpec("pitwall_car", "Car", CAR_ROWS, car_readout, width=200),
 )

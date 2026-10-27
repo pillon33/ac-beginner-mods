@@ -25,6 +25,9 @@ def read_frame(memory):
         lap_time_ms=ac.getCarState(PLAYER_CAR, acsys.CS.LapTime),
         speed_kmh=ac.getCarState(PLAYER_CAR, acsys.CS.SpeedKMH),
         gear=ac.getCarState(PLAYER_CAR, acsys.CS.Gear),
+        current_sector=memory.graphics.get("currentSectorIndex"),
+        last_sector_ms=memory.graphics.get("lastSectorTime"),
+        sector_count=memory.static.get("sectorCount"),
         session=SessionInfo(
             session_type=memory.graphics.get("session"),
             total_laps=memory.graphics.get("numberOfLaps"),
@@ -37,6 +40,8 @@ def read_frame(memory):
 
 def describe_session(frame):
     session = frame.session
-    return "session={} laps={} time_left_ms={:.0f} timed_race={} extra_lap={} fuel={:.2f}".format(
-        session.session_type, session.total_laps, session.time_left_ms,
-        session.is_timed_race, session.has_extra_lap, frame.fuel)
+    return ("session={} laps={} time_left_ms={:.0f} timed_race={} extra_lap={} fuel={:.2f} "
+            "sectors={} sector={} last_sector_ms={}".format(
+                session.session_type, session.total_laps, session.time_left_ms,
+                session.is_timed_race, session.has_extra_lap, frame.fuel,
+                frame.sector_count, frame.current_sector, frame.last_sector_ms))

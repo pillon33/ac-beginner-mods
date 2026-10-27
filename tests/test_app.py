@@ -91,8 +91,9 @@ class FakeBlock(object):
 class FakeMemory(object):
     def __init__(self):
         self.physics = FakeBlock({"fuel": 60.0})
-        self.graphics = FakeBlock({"session": 2, "numberOfLaps": 20, "sessionTimeLeft": 0.0})
-        self.static = FakeBlock({"isTimedRace": 0, "hasExtraLap": 0})
+        self.graphics = FakeBlock({"session": 2, "numberOfLaps": 20, "sessionTimeLeft": 0.0,
+                                      "currentSectorIndex": 1, "lastSectorTime": 31000})
+        self.static = FakeBlock({"isTimedRace": 0, "hasExtraLap": 0, "sectorCount": 3})
 
     def close(self):
         pass
@@ -127,7 +128,7 @@ def label_texts(fake_ac):
 def test_app_lifecycle_draws_every_window(app):
     module, fake_ac = app
     assert module.acMain("1.16") == "pitwall"
-    assert set(fake_ac.windows) == {"pitwall_fuel", "pitwall_car"}
+    assert set(fake_ac.windows) == {"pitwall_fuel", "pitwall_car", "pitwall_time"}
 
     for _ in range(3):
         module.acUpdate(0.016)
@@ -136,6 +137,7 @@ def test_app_lifecycle_draws_every_window(app):
     assert "60.00 L" in texts       # fuel window: tank
     assert "120 km/h" in texts      # car window: speed
     assert "3" in texts             # car window: gear 4 = third
+    assert "50.000" in texts        # time window: lap timer
     assert any(message.startswith("pitwall: session=2 laps=20") for message in fake_ac.logs)
     assert not module.failed_windows
 
@@ -151,7 +153,8 @@ def test_each_window_swaps_the_ac_logo_for_its_own_icon(app):
     assert all(y < -1000 for _, y in fake_ac.icon_positions.values())
     # ...and each window draws its own icon, from a file deploy installs.
     textures = sorted(fake_ac.textures.values())
-    assert textures == ["content/gui/icons/pitwall_car_ON.png", "content/gui/icons/pitwall_fuel_ON.png"]
+    assert textures == ["content/gui/icons/pitwall_car_ON.png", "content/gui/icons/pitwall_fuel_ON.png",
+                        "content/gui/icons/pitwall_time_ON.png"]
     for path in textures:
         assert os.path.isfile(os.path.join(REPO_ROOT, path))
 
