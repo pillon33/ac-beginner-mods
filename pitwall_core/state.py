@@ -11,6 +11,7 @@ laps count.
 from pitwall_core.fuel import FuelTracker
 from pitwall_core.laps import LapTracker
 from pitwall_core.race import laps_to_flag
+from pitwall_core.sectors import MiniSectorTracker
 
 
 class Frame(object):
@@ -35,6 +36,7 @@ class RaceState(object):
     def __init__(self):
         self.laps = LapTracker()
         self.fuel = FuelTracker()
+        self.sectors = MiniSectorTracker()
         self.frame = None
 
     def update(self, frame):
@@ -42,6 +44,8 @@ class RaceState(object):
         lap_update = self.laps.update(frame.completed_laps, frame.in_pit_lane,
                                       frame.lap_progress, frame.lap_time_ms)
         self.fuel.update(frame.fuel, lap_update, self.laps.lap_progress)
+        self.sectors.update(frame.in_pit_lane, self.laps.lap_progress, self.laps.lap_time_ms,
+                            lap_update.restarted, lap_update.closed_lap is not None)
 
     @property
     def laps_to_flag(self):

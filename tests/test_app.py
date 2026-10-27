@@ -29,6 +29,8 @@ class FakeAC(object):
         self.colours = {}
         self.textures = {}
         self.icon_positions = {}
+        self.backgrounds = {}
+        self.box_colours = {}
         self.logs = []
         self._next_id = 0
 
@@ -66,6 +68,15 @@ class FakeAC(object):
 
     def setIconPosition(self, window, x, y):
         self.icon_positions[window] = (x, y)
+
+    def drawBackground(self, control, flag):
+        self.backgrounds[control] = flag
+
+    def setBackgroundOpacity(self, control, opacity):
+        pass
+
+    def setBackgroundColor(self, control, r, g, b):
+        self.box_colours[control] = (r, g, b)
 
     def setTitle(self, *args):
         pass
@@ -127,7 +138,7 @@ def label_texts(fake_ac):
 def test_app_lifecycle_draws_every_window(app):
     module, fake_ac = app
     assert module.acMain("1.16") == "pitwall"
-    assert set(fake_ac.windows) == {"pitwall_fuel", "pitwall_car"}
+    assert set(fake_ac.windows) == {"pitwall_fuel", "pitwall_car", "pitwall_time"}
 
     for _ in range(3):
         module.acUpdate(0.016)
@@ -136,10 +147,22 @@ def test_app_lifecycle_draws_every_window(app):
     assert "60.00 L" in texts       # fuel window: tank
     assert "120 km/h" in texts      # car window: speed
     assert "3" in texts             # car window: gear 4 = third
+    assert "50.000" in texts        # time window: lap timer
     assert any(message.startswith("pitwall: session=2 laps=20") for message in fake_ac.logs)
     assert not module.failed_windows
 
     module.acShutdown()
+
+
+def test_time_window_draws_a_box_per_mini_sector(app):
+    from pitwall_core.sectors import MINI_SECTORS
+    module, fake_ac = app
+    module.acMain("1.16")
+    for _ in range(3):
+        module.acUpdate(0.016)
+    assert len(fake_ac.backgrounds) == MINI_SECTORS
+    assert len(fake_ac.box_colours) == MINI_SECTORS
+    assert not module.failed_windows
 
 
 def test_each_window_swaps_the_ac_logo_for_its_own_icon(app):
@@ -151,7 +174,8 @@ def test_each_window_swaps_the_ac_logo_for_its_own_icon(app):
     assert all(y < -1000 for _, y in fake_ac.icon_positions.values())
     # ...and each window draws its own icon, from a file deploy installs.
     textures = sorted(fake_ac.textures.values())
-    assert textures == ["content/gui/icons/pitwall_car_ON.png", "content/gui/icons/pitwall_fuel_ON.png"]
+    assert textures == ["content/gui/icons/pitwall_car_ON.png", "content/gui/icons/pitwall_fuel_ON.png",
+                        "content/gui/icons/pitwall_time_ON.png"]
     for path in textures:
         assert os.path.isfile(os.path.join(REPO_ROOT, path))
 

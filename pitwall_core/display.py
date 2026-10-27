@@ -8,12 +8,14 @@ Signs are ASCII ("+" / "-"): AC's default font has no Unicode minus.
 STATUS_GOOD = "good"
 STATUS_WARN = "warn"
 STATUS_BAD = "bad"
+STATUS_BEST = "best"   # purple: faster than the reference
 
 # RGBA per status, as ac.setFontColor takes them. None = no status.
 STATUS_RGBA = {
     STATUS_GOOD: (0.4, 0.9, 0.55, 1.0),
     STATUS_WARN: (1.0, 0.78, 0.3, 1.0),
     STATUS_BAD: (1.0, 0.42, 0.36, 1.0),
+    STATUS_BEST: (0.74, 0.45, 1.0, 1.0),
     None: (1.0, 1.0, 1.0, 1.0),
 }
 
@@ -91,3 +93,53 @@ def format_gear(gear):
     if gear == 1:
         return "N"
     return str(gear - 1)
+
+
+def format_lap_time(ms):
+    """'1:23.456' (minutes only when there are some: '58.123')."""
+    if ms is None or ms < 0:
+        return NO_VALUE
+    minutes, rest = divmod(int(round(ms)), 60000)
+    seconds = rest / 1000.0
+    if minutes:
+        return "{}:{:06.3f}".format(minutes, seconds)
+    return "{:.3f}".format(seconds)
+
+
+def format_delta(ms):
+    """'+0.234' / '-1.050' seconds."""
+    if ms is None:
+        return NO_VALUE
+    return "{:+.3f}".format(ms / 1000.0)
+
+
+def delta_status(ms):
+    """Within 0.05 s of the theoretical best is good, under 0.5 s is
+    a warning, beyond that bad."""
+    if ms is None:
+        return None
+    if ms <= 50:
+        return STATUS_GOOD
+    if ms <= 500:
+        return STATUS_WARN
+    return STATUS_BAD
+
+
+# Mini-sector box colours: how far a slice was behind its reference.
+BOX_GOOD_MS = 50     # up to this much slower: green
+BOX_WARN_MS = 200    # up to this much slower: yellow, beyond it red
+
+
+def slice_status(delta_ms):
+    """Status of one mini-sector against its reference time: purple
+    when faster (a new best), green within BOX_GOOD_MS, yellow within
+    BOX_WARN_MS, otherwise red. None without a reference."""
+    if delta_ms is None:
+        return None
+    if delta_ms < 0:
+        return STATUS_BEST
+    if delta_ms <= BOX_GOOD_MS:
+        return STATUS_GOOD
+    if delta_ms <= BOX_WARN_MS:
+        return STATUS_WARN
+    return STATUS_BAD
