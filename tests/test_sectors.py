@@ -85,9 +85,10 @@ def test_pit_lane_sector_is_not_counted_and_blanks_the_lap_delta():
     sample(tracker, 1, 20000, pit=True, laps=3)
     assert tracker.best_ms[0] == 30000
     assert tracker.delta_ms is None
+    # Sector 1 was entered from the pit lane, so it isn't counted either.
+    sample(tracker, 2, 20000, laps=3)
+    assert tracker.best_ms[1] == 31000
     # Later clean sectors still count towards bests but the lap has no delta.
-    sample(tracker, 2, 30500, laps=3)
-    assert tracker.best_ms[1] == 30500
     assert tracker.delta_ms is None
     sample(tracker, 0, 28000, laps=4)
     assert tracker.best_ms[2] == 28000
