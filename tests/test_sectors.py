@@ -1,196 +1,322 @@
 from pitwall_core.display import (
     STATUS_BAD, STATUS_GOOD, STATUS_WARN, delta_status, format_delta, format_lap_time,
 )
-from pitwall_core.sectors import SectorTracker
+from pitwall_core.sectors import SectorTracker, build_reference, interpolate
 from pitwall_core.state import Frame, RaceState
 from pitwall_core.windows import time_readout
 
 
-def sample(tracker, sector, last_ms=None, pit=False, laps=1, count=3, restarted=False):
-    tracker.update(sector, last_ms, pit, laps, count, restarted)
+STEPS = 20  # frames per sector
 
 
-def run_lap(tracker, times, laps=1, start_sector=0, pit_in=None):
-    """Cross each sector boundary in turn: times[i] is sector i's time.
-    Ends in the next lap's sector 0 (when all sectors are driven)."""
+def frames(times, laps, pit_in=None, first_last_ms=None):
+    """One lap of per-frame samples for a 3-sector track whose sector
+    boundaries are at 0, 1/3, 2/3 of the lap. times[i] is sector i's
+    time; the car moves at constant speed within a sector. Yields
+    (sector, last_sector_ms, pit, completed_laps, position, lap_time_ms)."""
+    elapsed = 0
+    count = len(times)
     for index, ms in enumerate(times):
-        nxt = (start_sector + index + 1) % len(times)
-        sample(tracker, nxt, ms, pit=(pit_in == index), laps=laps + (1 if nxt == 0 else 0))
+        last = first_last_ms if index == 0 else times[index - 1]
+        for k in range(STEPS):
+            position = (index + k / float(STEPS)) / count
+            yield (index, last if k == 0 else None, pit_in == index, laps,
+                   position, elapsed + ms * k / float(STEPS))
+        elapsed += ms
 
 
-def tracker_in_sector_0_watched():
-    """Joined in sector 2, crossed the line: now watching a full lap."""
+def feed(tracker, sample, count=3, restarted=False):
+    sector, last_ms, pit, laps, position, lap_ms = sample
+    tracker.update(sector, last_ms, pit, laps, count, restarted, position, lap_ms)
+
+
+def run_lap(tracker, times, laps=2, **kwargs):
+    for sample in frames(times, laps, **kwargs):
+        feed(tracker, sample)
+
+
+def tracker_after_join(times=(30000, 31000, 29000)):
+    """Joined mid-lap in sector 2, then drove one full clean lap:
+    every best is set, the reference is that lap."""
     tracker = SectorTracker()
-    sample(tracker, 2, laps=1)
-    sample(tracker, 0, 40000, laps=2)  # mid-sector join: not counted
+    feed(tracker, (2, None, False, 1, 0.97, 87000))
+    run_lap(tracker, times, laps=2, first_last_ms=29000)
+    # Cross the line so the last sector is closed.
+    feed(tracker, (0, times[2], False, 3, 0.0, 0))
     return tracker
 
 
 def test_no_sector_data_means_no_theoretical_best():
     tracker = SectorTracker()
-    sample(tracker, None)
+    tracker.update(None, None, False, 0)
     assert tracker.theoretical_best_ms is None
     assert tracker.delta_ms is None
 
 
 def test_joining_mid_sector_does_not_count_that_sector():
-    tracker = tracker_in_sector_0_watched()
+    tracker = SectorTracker()
+    feed(tracker, (2, None, False, 1, 0.97, 87000))
+    feed(tracker, (0, 29000, False, 2, 0.0, 0))
     assert tracker.best_ms == {}
 
 
 def test_theoretical_best_needs_every_sector():
-    tracker = tracker_in_sector_0_watched()
-    sample(tracker, 1, 30000, laps=2)
-    sample(tracker, 2, 31000, laps=2)
-    assert tracker.best_ms == {0: 30000, 1: 31000}
+    tracker = SectorTracker()
+    feed(tracker, (2, None, False, 1, 0.97, 87000))
+    for sample in frames([30000, 31000, 29000], 2, first_last_ms=29000):
+        feed(tracker, sample)
+    # Sector 2 is still being driven.
+    assert sorted(tracker.best_ms) == [0, 1]
     assert tracker.theoretical_best_ms is None
-    sample(tracker, 0, 29000, laps=3)
+    feed(tracker, (0, 29000, False, 3, 0.0, 0))
     assert tracker.theoretical_best_ms == 90000
 
 
-def test_unknown_sector_count_gives_no_theoretical_best():
+def test_unknown_sector_count_gives_no_theoretical_best_or_delta():
     tracker = SectorTracker()
-    for sector, ms in [(2, None), (0, 1), (1, 30000), (2, 31000), (0, 29000)]:
-        tracker.update(sector, ms, False, 2, None)
+    for sample in frames([30000, 31000, 29000], 2, first_last_ms=29000):
+        tracker.update(sample[0], sample[1], sample[2], sample[3], None, False, sample[4], sample[5])
     assert tracker.theoretical_best_ms is None
+    assert tracker.delta_ms is None
 
 
 def test_theoretical_best_combines_best_sectors_from_different_laps():
-    tracker = tracker_in_sector_0_watched()
-    run_lap(tracker, [30000, 31000, 29000], laps=2)
-    run_lap(tracker, [30500, 30000, 29500], laps=3)
+    tracker = tracker_after_join()
+    run_lap(tracker, [30500, 30000, 29500], laps=3, first_last_ms=29000)
+    feed(tracker, (0, 29500, False, 4, 0.0, 0))
     assert tracker.best_ms == {0: 30000, 1: 30000, 2: 29000}
     assert tracker.theoretical_best_ms == 89000
 
 
-def test_delta_is_gap_to_best_sectors_so_far_and_holds_across_the_line():
-    tracker = tracker_in_sector_0_watched()
-    run_lap(tracker, [30000, 31000, 29000], laps=2)
-    assert tracker.delta_ms == 0          # lap that set every best
-    sample(tracker, 1, 30400, laps=3)
-    assert tracker.delta_ms == 400
-    sample(tracker, 2, 31100, laps=3)
-    assert tracker.delta_ms == 400 + 100
-    sample(tracker, 0, 29200, laps=4)
-    assert tracker.delta_ms == 700        # full lap gap, held into the next lap
-    sample(tracker, 0, None, laps=4)
-    assert tracker.delta_ms == 700
+def test_reference_ends_at_the_theoretical_best():
+    tracker = tracker_after_join()
+    run_lap(tracker, [30500, 30000, 29500], laps=3, first_last_ms=29000)
+    feed(tracker, (0, 29500, False, 4, 0.0, 0))
+    reference = build_reference(tracker.best_trace, tracker.best_ms, 3)
+    assert reference[0] == (0.0, 0)
+    assert reference[-1] == (1.0, tracker.theoretical_best_ms)
+    assert all(a[0] <= b[0] and a[1] <= b[1] for a, b in zip(reference, reference[1:]))
 
 
-def test_pit_lane_sector_is_not_counted_and_blanks_the_lap_delta():
-    tracker = tracker_in_sector_0_watched()
-    run_lap(tracker, [30000, 31000, 29000], laps=2)
-    # Out-lap: in the pit lane through sector 0, which is not counted.
-    sample(tracker, 0, 29000, pit=True, laps=3)
-    sample(tracker, 1, 20000, pit=True, laps=3)
-    assert tracker.best_ms[0] == 30000
+def test_no_delta_without_a_full_reference():
+    tracker = SectorTracker()
+    feed(tracker, (2, None, False, 1, 0.97, 87000))
+    for sample in frames([30000, 31000, 29000], 2, first_last_ms=29000):
+        feed(tracker, sample)
+        assert tracker.delta_ms is None
+
+
+def test_delta_updates_every_frame_mid_sector():
+    tracker = tracker_after_join()
+    # Next lap: slower than the reference by 2 s in sector 0 only.
+    deltas = []
+    for sample in frames([32000, 31000, 29000], 3, first_last_ms=29000):
+        feed(tracker, sample)
+        deltas.append(tracker.delta_ms)
+    sector0 = deltas[:STEPS]
+    assert all(d is not None for d in deltas)
+    # Grows steadily through sector 0, not stuck at a split.
+    assert sector0 == sorted(sector0) and len(set(sector0)) == STEPS
+    assert abs(sector0[10] - 1000) < 1
+    # Sectors 1 and 2 are at reference pace: the lost 2 s stays.
+    assert abs(deltas[STEPS + 10] - 2000) < 1
+    assert abs(deltas[-1] - 2000) < 1
+
+
+def test_delta_goes_negative_when_faster_than_the_reference():
+    tracker = tracker_after_join()
+    deltas = []
+    for sample in frames([29000, 31000, 29000], 3, first_last_ms=29000):
+        feed(tracker, sample)
+        deltas.append(tracker.delta_ms)
+    assert deltas[STEPS - 1] < -900
+    # The faster sector is the new reference, so the lap ends 1 s better.
+    feed(tracker, (0, 29000, False, 4, 0.0, 0))
+    assert tracker.theoretical_best_ms == 89000
+
+
+def test_delta_interpolates_between_trace_samples():
+    tracker = tracker_after_join()
+    reference = tracker._reference
+    (p0, t0), (p1, t1) = reference[10], reference[11]
+    position = p0 + 0.4 * (p1 - p0)
+    lap_time = t0 + 0.4 * (t1 - t0) + 250
+    tracker._last_pos = position - 0.01   # as if driving on from just before
+    tracker.update(0, None, False, 3, 3, False, position, lap_time)
+    assert abs(tracker.delta_ms - 250) < 0.001
+
+
+def test_interpolate_clamps_and_handles_empty():
+    points = [(0.0, 0), (0.5, 1000), (1.0, 3000)]
+    assert interpolate([], 0.3) is None
+    assert interpolate(points, -0.1) == 0
+    assert interpolate(points, 0.25) == 500
+    assert interpolate(points, 0.75) == 2000
+    assert interpolate(points, 1.2) == 3000
+
+
+def test_delta_survives_the_start_finish_wrap():
+    tracker = tracker_after_join()
+    for sample in frames([30000, 31000, 29000], 3, first_last_ms=29000):
+        feed(tracker, sample)
+        assert tracker.delta_ms is not None
+        assert abs(tracker.delta_ms) < 1
+    # Position wraps from ~0.98 to 0.0 and the delta carries on.
+    feed(tracker, (0, 29000, False, 4, 0.0, 0))
+    assert tracker.delta_ms is not None and abs(tracker.delta_ms) < 1
+
+
+def test_position_wraps_before_the_sector_index():
+    tracker = tracker_after_join()
+    run_lap(tracker, [30000, 31000, 29000], laps=3, first_last_ms=29000)
+    # Position is already past the line while the index still says sector 2.
+    tracker.update(2, None, False, 4, 3, False, 0.001, 20)
     assert tracker.delta_ms is None
-    # Sector 1 was entered from the pit lane, so it isn't counted either.
-    sample(tracker, 2, 20000, laps=3)
-    assert tracker.best_ms[1] == 31000
-    # Later clean sectors still count towards bests but the lap has no delta.
-    assert tracker.delta_ms is None
-    sample(tracker, 0, 28000, laps=4)
-    assert tracker.best_ms[2] == 28000
-    assert tracker.delta_ms is None
-    # Next lap is clean again.
-    sample(tracker, 1, 30000, laps=4)
-    assert tracker.delta_ms == 0
+    feed(tracker, (0, 29000, False, 4, 0.002, 40))
+    assert tracker.best_ms[2] == 29000   # the closing sector wasn't spoiled
+    assert abs(tracker.delta_ms + 140) < 1   # 40 ms vs 180 ms at 0.002
 
 
-def test_pit_visit_in_the_sector_start_taints_it():
-    tracker = tracker_in_sector_0_watched()
-    sample(tracker, 1, 30000, laps=2)
-    sample(tracker, 1, None, pit=True, laps=2)
-    sample(tracker, 2, 5000, laps=2)
-    assert 1 not in tracker.best_ms
+def test_position_going_backwards_blanks_the_delta_until_the_line():
+    tracker = tracker_after_join()
+    frames_ = list(frames([30000, 31000, 29000], 3, first_last_ms=29000))
+    for sample in frames_[:30]:
+        feed(tracker, sample)
+    assert tracker.delta_ms is not None
+    feed(tracker, (1, None, False, 3, 0.2, 40000))   # spun back
+    assert tracker.delta_ms is None
+    for sample in frames_[30:]:
+        feed(tracker, sample)
+        assert tracker.delta_ms is None
+    feed(tracker, (0, 29000, False, 4, 0.0, 0))
+    assert abs(tracker.delta_ms) < 1
+
+
+def test_position_jump_blanks_the_delta():
+    tracker = tracker_after_join()
+    frames_ = list(frames([30000, 31000, 29000], 3, first_last_ms=29000))
+    for sample in frames_[:10]:
+        feed(tracker, sample)
+    feed(tracker, (1, None, False, 3, 0.45, 43000))  # teleported ahead
+    assert tracker.delta_ms is None
+
+
+def test_pit_lane_blanks_the_delta_for_the_rest_of_the_lap():
+    tracker = tracker_after_join()
+    for sample in frames([30000, 31000, 29000], 3, pit_in=1, first_last_ms=29000):
+        feed(tracker, sample)
+        if sample[0] >= 1:
+            assert tracker.delta_ms is None
+    # Clean again after the line.
+    feed(tracker, (0, 29000, False, 4, 0.0, 0))
+    assert abs(tracker.delta_ms) < 1
+
+
+def test_pit_lane_sector_is_not_counted():
+    tracker = tracker_after_join()
+    run_lap(tracker, [20000, 20000, 20000], laps=3, pit_in=1, first_last_ms=29000)
+    feed(tracker, (0, 20000, False, 4, 0.0, 0))
+    # Entering the pit lane in sector 1 spoils sector 1, and sector 0
+    # too, since it closes on the frame the car is in the pit lane.
+    assert tracker.best_ms == {0: 30000, 1: 31000, 2: 20000}
 
 
 def test_standing_start_sector_is_not_counted():
     tracker = SectorTracker()
-    sample(tracker, 0, laps=0)
-    sample(tracker, 1, 45000, laps=0)
-    assert tracker.best_ms == {}
-    sample(tracker, 2, 31000, laps=0)
-    assert tracker.best_ms == {1: 31000}
+    run_lap(tracker, [45000, 31000, 29000], laps=0)
+    feed(tracker, (0, 29000, False, 1, 0.0, 0))
+    assert tracker.best_ms == {1: 31000, 2: 29000}
 
 
 def test_invalid_or_zero_sector_times_are_ignored():
-    tracker = tracker_in_sector_0_watched()
-    sample(tracker, 1, 0, laps=2)
-    sample(tracker, 2, None, laps=2)
+    tracker = SectorTracker()
+    feed(tracker, (2, None, False, 1, 0.97, 87000))
+    feed(tracker, (0, 29000, False, 2, 0.0, 0))
+    feed(tracker, (1, 0, False, 2, 0.34, 30000))
+    feed(tracker, (2, None, False, 2, 0.67, 61000))
     assert tracker.best_ms == {}
 
 
 def test_skipped_sector_is_not_counted():
-    tracker = tracker_in_sector_0_watched()
-    sample(tracker, 2, 30000, laps=2)   # 0 -> 2 skips sector 1
+    tracker = SectorTracker()
+    feed(tracker, (2, None, False, 1, 0.97, 87000))
+    feed(tracker, (0, 29000, False, 2, 0.0, 0))
+    feed(tracker, (0, None, False, 2, 0.1, 9000))
+    feed(tracker, (2, 30000, False, 2, 0.7, 60000))   # 0 -> 2 skips sector 1
     assert tracker.best_ms == {}
+
+
+def test_trace_memory_is_bounded():
+    tracker = SectorTracker()
+    feed(tracker, (2, None, False, 1, 0.97, 87000))
+    feed(tracker, (0, 29000, False, 2, 0.0, 0))
+    for k in range(1, 3000):
+        tracker.update(0, None, False, 2, 3, False, 0.3 * k / 3000.0, k * 10)
+    assert len(tracker._trace) <= 400
 
 
 def test_session_restart_forgets_everything():
-    tracker = tracker_in_sector_0_watched()
-    run_lap(tracker, [30000, 31000, 29000], laps=2)
+    tracker = tracker_after_join()
     assert tracker.theoretical_best_ms == 90000
-    sample(tracker, 0, None, laps=0, restarted=True)
+    tracker.update(0, None, False, 0, 3, True, 0.0, 0)
     assert tracker.best_ms == {}
+    assert tracker.best_trace == {}
     assert tracker.delta_ms is None
     assert tracker.theoretical_best_ms is None
 
 
-def test_race_state_resets_sectors_when_the_lap_counter_drops():
+def stream_state(stream):
     state = RaceState()
-
-    def frame(laps, sector, last_ms=None):
-        state.update(Frame(fuel=50.0, completed_laps=laps, in_pit_lane=False,
-                           current_sector=sector, last_sector_ms=last_ms, sector_count=3))
-
-    frame(2, 2)
-    for laps, sector, ms in [(3, 0, 1), (3, 1, 30000), (3, 2, 31000), (4, 0, 29000)]:
-        frame(laps, sector, ms)
-    assert state.sectors.theoretical_best_ms == 90000
-    frame(0, 0)
-    assert state.sectors.best_ms == {}
-
-
-def make_state(sectors_done=3, lap_time_ms=12345):
-    state = RaceState()
-
-    def frame(laps, sector, last_ms=None, lap_ms=None):
-        state.update(Frame(fuel=50.0, completed_laps=laps, in_pit_lane=False,
-                           lap_time_ms=lap_ms, current_sector=sector, last_sector_ms=last_ms,
+    for sector, last, pit, laps, position, lap_ms in stream:
+        state.update(Frame(fuel=50.0, completed_laps=laps, in_pit_lane=pit, lap_progress=position,
+                           lap_time_ms=lap_ms, current_sector=sector, last_sector_ms=last,
                            sector_count=3))
+    return state
 
-    frame(2, 2)
-    steps = [(3, 0, 1), (3, 1, 30000), (3, 2, 31000), (4, 0, 29000)][:sectors_done + 1]
-    for laps, sector, ms in steps:
-        frame(laps, sector, ms)
-    frame(steps[-1][0], steps[-1][1], None, lap_time_ms)
-    return state, frame
+
+def reference_stream():
+    stream = [(2, None, False, 1, 0.97, 87000)]
+    stream += list(frames([30000, 31000, 29000], 2, first_last_ms=29000))
+    stream.append((0, 29000, False, 3, 0.0, 0))
+    return stream
+
+
+def test_race_state_resets_sectors_when_the_lap_counter_drops():
+    state = stream_state(reference_stream())
+    assert state.sectors.theoretical_best_ms == 90000
+    state.update(Frame(fuel=50.0, completed_laps=0, in_pit_lane=False, lap_progress=0.0,
+                       lap_time_ms=0, current_sector=0, sector_count=3))
+    assert state.sectors.best_ms == {}
+    assert state.sectors.delta_ms is None
 
 
 def test_time_readout_shows_dashes_until_a_theoretical_best_exists():
-    state, _ = make_state(sectors_done=2, lap_time_ms=None)
-    assert time_readout(state) == {
-        "lap": ("--", None), "theoretical": ("--", None), "delta": ("--", None)}
+    state = stream_state(reference_stream()[:30])
+    assert time_readout(state)["theoretical"] == ("--", None)
+    assert time_readout(state)["delta"] == ("--", None)
 
 
-def test_time_readout_shows_timer_even_before_sectors():
+def test_time_readout_lap_timer_without_sector_data():
     state = RaceState()
     state.update(Frame(fuel=50.0, completed_laps=0, in_pit_lane=False, lap_time_ms=65432))
     assert time_readout(state)["lap"] == ("1:05.432", None)
+    assert time_readout(state)["delta"] == ("--", None)
 
 
-def test_time_readout_with_theoretical_best_and_delta():
-    state, frame = make_state(lap_time_ms=12345)
-    readout = time_readout(state)
-    assert readout["lap"] == ("12.345", None)
-    assert readout["theoretical"] == ("1:30.000", None)
-    assert readout["delta"] == ("+0.000", STATUS_GOOD)
-    frame(4, 1, 30400, 31000)
-    assert time_readout(state)["delta"] == ("+0.400", STATUS_WARN)
-    frame(4, 2, 32000, 62000)
-    assert time_readout(state)["delta"] == ("+1.400", STATUS_BAD)
+def test_time_readout_signed_delta_and_status():
+    state = stream_state(reference_stream())
+    assert time_readout(state)["theoretical"] == ("1:30.000", None)
+    assert time_readout(state)["delta"] == ("+0.000", STATUS_GOOD)
+
+    def at(position, lap_ms):
+        state.update(Frame(fuel=50.0, completed_laps=3, in_pit_lane=False, lap_progress=position,
+                           lap_time_ms=lap_ms, current_sector=0, sector_count=3))
+        return time_readout(state)["delta"]
+
+    # Reference pace at 0.1 of the lap is 9000 ms (30 s per third).
+    assert at(0.1, 9000 + 300) == ("+0.300", STATUS_WARN)
+    assert at(0.12, 10800 + 2000) == ("+2.000", STATUS_BAD)
+    assert at(0.14, 12600 - 123) == ("-0.123", STATUS_GOOD)
 
 
 def test_formatting_and_status():
@@ -200,7 +326,9 @@ def test_formatting_and_status():
     assert format_lap_time(5007) == "5.007"
     assert format_delta(None) == "--"
     assert format_delta(-1050) == "-1.050"
+    assert format_delta(250) == "+0.250"
     assert delta_status(None) is None
+    assert delta_status(-400) == STATUS_GOOD
     assert delta_status(0) == STATUS_GOOD
     assert delta_status(500) == STATUS_WARN
     assert delta_status(501) == STATUS_BAD
